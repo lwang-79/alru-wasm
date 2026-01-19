@@ -1,0 +1,33 @@
+{
+  "name": "alru-wasm",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@aws-sdk/client-amplify": "^3.971.0",
+    "@aws-sdk/client-lambda": "^3.971.0",
+    "@aws-sdk/client-resource-groups-tagging-api": "^3.971.0",
+    "@aws-sdk/credential-providers": "^3.971.0",
+    "@isomorphic-git/lightning-fs": "^4.6.2",
+    "@solidjs/router": "^0.15.4",
+    "@webcontainer/api": "^1.6.1",
+    "buffer": "^6.0.3",
+    "isomorphic-git": "^1.36.1",
+    "solid-js": "^1.9.10"
+  },
+  "devDependencies": {
+    "@solidjs/testing-library": "^0.8.10",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@types/node": "^24.10.1",
+    "happy-dom": "^20.3.1",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4",
+    "vite-plugin-solid": "^2.11.10",
+    "vitest": "^4.0.17"
+  }
+}
