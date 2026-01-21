@@ -6,20 +6,19 @@ import {
   createEffect,
   onMount,
 } from "solid-js";
-import type { AmplifyJobDetails } from "../types";
+import type { AmplifyJobDetails } from "../services/aws/amplifyService";
 import {
   appState,
   setAppState,
   checkAndResetPushStepIfNeeded,
   updatePushStepContext,
 } from "../store/appStore";
-import { CleanupDialog } from "./CleanupDialog";
 import { WebContainerService } from "../services/container/webContainerService";
 import { GitService, type GitCredentials } from "../services/git/gitService";
 import { AmplifyService } from "../services/aws/amplifyService";
 import { CredentialService } from "../services/aws/credentialService";
-import "./shared.css";
-import "./PushStep.css";
+import { WizardStep } from "./common/WizardStep";
+import "./shared-tailwind.css";
 
 interface PushStepProps {
   onComplete?: () => void;
@@ -32,6 +31,10 @@ export function PushStep(props: PushStepProps) {
   const setPushStatus = (status: typeof appState.pushStep.status) =>
     setAppState("pushStep", "status", status);
 
+  const deploymentMode = () => appState.pushStep.deploymentMode;
+  const setDeploymentMode = (mode: "current" | "test") =>
+    setAppState("pushStep", "deploymentMode", mode);
+
   const pushError = () => appState.pushStep.error;
   const setPushError = (error: string | null) =>
     setAppState("pushStep", "error", error);
@@ -39,6 +42,10 @@ export function PushStep(props: PushStepProps) {
   const commitHash = () => appState.pushStep.commitHash;
   const setCommitHash = (hash: string | null) =>
     setAppState("pushStep", "commitHash", hash);
+
+  const targetBranch = () => appState.pushStep.targetBranch;
+  const setTargetBranch = (branch: string | null) =>
+    setAppState("pushStep", "targetBranch", branch);
 
   const amplifyJob = () => appState.pushStep.amplifyJob;
   const setAmplifyJob = (job: AmplifyJobDetails | null) =>
@@ -55,9 +62,22 @@ export function PushStep(props: PushStepProps) {
   const setLastFailedJob = (job: AmplifyJobDetails | null) =>
     setAppState("pushStep", "lastFailedJob", job);
 
+  const innerStep = () => appState.pushStep.innerStep;
+  const setInnerStep = (step: number) =>
+    setAppState("pushStep", "innerStep", step);
+
+  const postTestSelection = () => appState.pushStep.postTestSelection;
+  const setPostTestSelection = (selection: "push" | "manual" | null) =>
+    setAppState("pushStep", "postTestSelection", selection);
+
   const retryingJob = () => appState.pushStep.retryingJob;
   const setRetryingJob = (retrying: boolean) =>
     setAppState("pushStep", "retryingJob", retrying);
+
+  const [managementStatus, setManagementStatus] = createSignal<string | null>(
+    null,
+  );
+  const [managementLoading, setManagementLoading] = createSignal(false);
 
   // Local signals for dialogs and temporary state (these don't need persistence)
   const [showCleanupDialog, setShowCleanupDialog] = createSignal(false);
@@ -86,9 +106,14 @@ export function PushStep(props: PushStepProps) {
   // Get environment variable changes from app state
   const getEnvVarChanges = () => appState.repository.envVarChanges;
 
-  // Show confirmation dialog
+  // Show confirmation dialog or start push immediately for test branch
   const handleInitiatePush = () => {
-    setPushStatus("confirming");
+    if (deploymentMode() === "test") {
+      // Skip confirmation for test branches
+      handleConfirmPush();
+    } else {
+      setPushStatus("confirming");
+    }
   };
 
   // Cancel push
@@ -128,8 +153,8 @@ export function PushStep(props: PushStepProps) {
     return new Promise((resolve, reject) => {
       const username = prompt(
         "GitHub Authentication Required\n\n" +
-          "No credentials found. Please configure credentials in Step 1.\n\n" +
-          "Enter your GitHub username:",
+        "No credentials found. Please configure credentials in Step 1.\n\n" +
+        "Enter your GitHub username:",
       );
       if (!username) {
         reject(
@@ -142,10 +167,10 @@ export function PushStep(props: PushStepProps) {
 
       const password = prompt(
         "GitHub Authentication Required\n\n" +
-          "No credentials found. Please configure credentials in Step 1.\n\n" +
-          "Enter your Personal Access Token (PAT):\n\n" +
-          "Create one at: https://github.com/settings/tokens\n" +
-          "Required scope: 'repo' (for private repos) or 'public_repo' (for public repos)",
+        "No credentials found. Please configure credentials in Step 1.\n\n" +
+        "Enter your Personal Access Token (PAT):\n\n" +
+        "Create one at: https://github.com/settings/tokens\n" +
+        "Required scope: 'repo' (for private repos) or 'public_repo' (for public repos)",
       );
       if (!password) {
         reject(
@@ -226,7 +251,7 @@ export function PushStep(props: PushStepProps) {
         console.error("[Push] Invalid credentials after all attempts:", creds);
         setPushError(
           "Invalid Git credentials. Please ensure both username and password/token are provided. " +
-            "Go back to Step 1 to configure your GitHub credentials.",
+          "Go back to Step 1 to configure your GitHub credentials.",
         );
         setPushStatus("failed");
         return;
@@ -236,6 +261,24 @@ export function PushStep(props: PushStepProps) {
         "[Push] Final credentials check passed. Username:",
         creds.username,
       );
+
+      const currentBranch = appState.amplifyResources.selectedBranch?.branch_name;
+      let targetBranch = currentBranch;
+      setTargetBranch(targetBranch || null);
+
+      if (deploymentMode() === "test" && currentBranch) {
+        const credsDetails = new CredentialService().getCredentials();
+        const username = credsDetails?.git?.username || "user";
+        const timestamp = Math.floor(Date.now() / 1000);
+        targetBranch = `test-${username}-${timestamp}`;
+
+        console.log(`[Push] Target branch: ${targetBranch}`);
+        setTargetBranch(targetBranch || null);
+
+        console.log(`[Push] Creating test branch: ${targetBranch}...`);
+        await gitService.createBranch(clonePath, targetBranch);
+        await gitService.checkout(clonePath, targetBranch);
+      }
 
       // Create commit message based on changes
       const targetRuntime = appState.runtimeInfo.targetRuntime;
@@ -263,49 +306,55 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
         throw getChangedFilesError;
       }
 
-      if (changedFiles.length === 0) {
-        // No changes to commit
-        console.log("[Push] No changes to commit, skipping");
-        setCommitHash(null);
-        setPushStatus("success");
-        setJobCheckError(
-          "No changes were committed, so no deployment job was triggered",
-        );
-
-        // Check if the last job failed - if so, we should retry it
-        checkLastJobStatus();
-        return;
-      }
-
-      // Commit and push changes with streaming progress
-      console.log("[Push] Step 2: Starting commitAndPush...");
-      console.log("[Push] Repository path:", clonePath);
-      console.log("[Push] Credentials:", {
-        username: creds.username,
-        passwordLength: creds.password?.length,
-      });
-
       let hash;
-      try {
-        hash = await gitService.commitAndPush(
-          clonePath,
-          commitMessage,
-          creds,
-          (message: string) => {
-            // Progress callback for streaming updates
+      if (changedFiles.length === 0) {
+        if (deploymentMode() === "test" && targetBranch && targetBranch !== currentBranch) {
+          // Push the branch ref even if there are no changes to commit
+          console.log("[Push] No changes detected, but pushing new branch anyway...");
+          await gitService.push(clonePath, creds, (message: string) => {
             console.log(`[Git Progress] ${message}`);
-          },
-        );
-        console.log("[Push] Step 3: commitAndPush SUCCESS, hash:", hash);
-      } catch (commitPushError) {
-        console.error("[Push] ❌ ERROR in commitAndPush:");
-        console.error("[Push] Error object:", commitPushError);
-        console.error("[Push] Error type:", typeof commitPushError);
-        if (commitPushError instanceof Error) {
-          console.error("[Push] Error message:", commitPushError.message);
-          console.error("[Push] Error stack:", commitPushError.stack);
+          }, targetBranch);
+
+          hash = await gitService.getCurrentCommit(clonePath);
+          console.log("[Push] Pushed branch ref, hash:", hash);
+        } else {
+          // No changes to commit
+          console.log("[Push] No changes to commit, skipping");
+          setCommitHash(null);
+          setPushStatus("success");
+          setJobCheckError(
+            "No changes were committed, so no deployment job was triggered",
+          );
+
+          // Check if the last job failed - if so, we should retry it
+          checkLastJobStatus();
+          return;
         }
-        throw commitPushError;
+      } else {
+        // Commit and push changes with streaming progress
+        console.log("[Push] Step 2: Starting commitAndPush...");
+        try {
+          hash = await gitService.commitAndPush(
+            clonePath,
+            commitMessage,
+            creds,
+            (message: string) => {
+              // Progress callback for streaming updates
+              console.log(`[Git Progress] ${message}`);
+            },
+            targetBranch || undefined,
+          );
+          console.log("[Push] Step 3: commitAndPush SUCCESS, hash:", hash);
+        } catch (commitPushError) {
+          console.error("[Push] ❌ ERROR in commitAndPush:");
+          console.error("[Push] Error object:", commitPushError);
+          console.error("[Push] Error type:", typeof commitPushError);
+          if (commitPushError instanceof Error) {
+            console.error("[Push] Error message:", commitPushError.message);
+            console.error("[Push] Error stack:", commitPushError.stack);
+          }
+          throw commitPushError;
+        }
       }
 
       setCommitHash(hash);
@@ -313,7 +362,44 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
 
       // Check for Amplify job
       if (hash) {
-        checkForAmplifyJob(hash);
+        // If we pushed to a test branch, we might need to wait and verify it's connected
+        if (deploymentMode() === "test" && targetBranch && targetBranch !== currentBranch) {
+          console.log("[Push] Waiting 5 seconds for Amplify to detect new branch...");
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+
+          const amplifyService = new AmplifyService();
+          const region = appState.awsConfig.selectedRegion;
+          const appId = appState.amplifyResources.selectedApp?.app_id;
+
+          if (region && appId) {
+            try {
+              const branches = await amplifyService.listBranches(region, appId);
+              const branchExists = branches.some((b) => b.branchName === targetBranch);
+
+              if (!branchExists) {
+                console.log(`[Push] Branch ${targetBranch} not found in Amplify, connecting it now...`);
+                await amplifyService.createBranch(region, appId, targetBranch, `Test branch created via ALRU on ${new Date().toLocaleString()}`);
+                console.log(`[Push] Branch ${targetBranch} connected successfully.`);
+
+                // Manually start the job since auto-build might not trigger immediately on first connection
+                try {
+                  console.log(`[Push] Manually starting job for branch ${targetBranch}...`);
+                  await amplifyService.startJob(region, appId, targetBranch, "RELEASE");
+                  console.log(`[Push] Job started successfully for ${targetBranch}.`);
+                } catch (startJobError) {
+                  console.warn("[Push] Failed to manually start job (it might have started automatically):", startJobError);
+                }
+
+                // Wait a bit more for the job to show up in the list
+                await new Promise((resolve) => setTimeout(resolve, 3000));
+              }
+            } catch (branchError) {
+              console.error("[Push] Error verifying/connecting branch:", branchError);
+            }
+          }
+        }
+
+        checkForAmplifyJob(hash, targetBranch || undefined);
       }
     } catch (e) {
       const errorMessage = String(e);
@@ -329,7 +415,7 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
         setGitCredentials(null);
         setPushError(
           "Authentication failed. Please check your GitHub username and Personal Access Token (PAT). " +
-            "Make sure your PAT has 'repo' permissions.",
+          "Make sure your PAT has 'repo' permissions.",
         );
       } else {
         setPushError(errorMessage);
@@ -434,7 +520,7 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
       setLastFailedJob(null);
 
       // Start polling for job status updates
-      startJobStatusPolling(newJob.jobId);
+      startJobStatusPolling(newJob.jobId, selectedBranch.branch_name);
     } catch (e) {
       console.error("Failed to retry job:", e);
       setJobCheckError(`Failed to retry job: ${String(e)}`);
@@ -444,14 +530,16 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
   };
 
   // Check for Amplify job after push with retry logic
-  const checkForAmplifyJob = async (commitId: string) => {
+  const checkForAmplifyJob = async (commitId: string, branchOverride?: string) => {
     const selectedApp = appState.amplifyResources.selectedApp;
     const selectedBranch = appState.amplifyResources.selectedBranch;
     const region = appState.awsConfig.selectedRegion;
 
-    if (!selectedApp || !selectedBranch || !region) {
+    if (!selectedApp || (!selectedBranch && !branchOverride) || !region) {
       return;
     }
+
+    const branchName = branchOverride || selectedBranch!.branch_name;
 
     setCheckingForJob(true);
     setJobCheckError(null);
@@ -484,25 +572,32 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
         );
 
         const amplifyService = new AmplifyService();
+        // Fetch jobs without filtering by commitId first to handle "HEAD" or multiple matches
         const jobs = await amplifyService.listJobs(
           region,
           selectedApp.app_id,
-          selectedBranch.branch_name,
-          commitId,
+          branchName,
         );
 
-        if (jobs.length > 0) {
+        // Find the best matching job:
+        // 1. Exact commitId match
+        // 2. "HEAD" match (common for new branches/manual starts)
+        // 3. Any active job if it's a test branch (since we just started it)
+        const job = jobs.find(j => j.commitId === commitId) ||
+          jobs.find(j => j.commitId === "HEAD") ||
+          (deploymentMode() === "test" ? jobs[0] : null);
+
+        if (job) {
           // Found a job, get its details
-          const job = jobs[0];
           console.log(
-            `[checkForAmplifyJob] Found job on attempt ${attempt}:`,
+            `[checkForAmplifyJob] Found job (${job.commitId}) on attempt ${attempt}:`,
             job.jobId,
           );
 
           const jobDetails = await amplifyService.getJob(
             region,
             selectedApp.app_id,
-            selectedBranch.branch_name,
+            branchName,
             job.jobId,
           );
 
@@ -511,7 +606,7 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
           setCheckingForJob(false);
 
           // Start polling for job status updates every 10 seconds
-          startJobStatusPolling(job.jobId);
+          startJobStatusPolling(job.jobId, branchName);
           return; // Job found, exit retry loop
         } else {
           console.log(
@@ -541,7 +636,7 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
   };
 
   // Poll job status every 10 seconds
-  const startJobStatusPolling = (jobId: string) => {
+  const startJobStatusPolling = (jobId: string, branchName: string) => {
     // Clear any existing interval
     if (jobCheckInterval !== null) {
       clearInterval(jobCheckInterval);
@@ -549,10 +644,9 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
 
     jobCheckInterval = window.setInterval(async () => {
       const selectedApp = appState.amplifyResources.selectedApp;
-      const selectedBranch = appState.amplifyResources.selectedBranch;
       const region = appState.awsConfig.selectedRegion;
 
-      if (!selectedApp || !selectedBranch || !region) {
+      if (!selectedApp || !region) {
         return;
       }
 
@@ -561,7 +655,7 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
         const jobDetails = await amplifyService.getJob(
           region,
           selectedApp.app_id,
-          selectedBranch.branch_name,
+          branchName,
           jobId,
         );
 
@@ -750,11 +844,12 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
   };
 
   const handleBack = () => {
-    if (props.onBack) {
-      props.onBack();
+    // Disable back if push is running or finished
+    if (pushStatus() === "running" || pushStatus() === "success") {
+      return;
     }
+    if (props.onBack) props.onBack();
   };
-
   const handleFinish = () => {
     // Show cleanup dialog if repository exists
     if (appState.repository.clonePath) {
@@ -770,493 +865,1098 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
     // The CleanupDialog already handles navigation to the appropriate step
   };
 
+  // Push the same changes to the current main branch
+  const handlePushToCurrent = async () => {
+    const creds = await getStoredGitCredentials();
+    if (!creds) {
+      setManagementStatus("Error: Git credentials not found in storage. Please go back to Step 1.");
+      return;
+    }
+
+    const currentBranch = appState.amplifyResources.selectedBranch?.branch_name;
+    const clonePath = appState.repository.clonePath;
+
+    if (!currentBranch || !clonePath) {
+      setManagementStatus("Error: Target branch or repository path missing.");
+      return;
+    }
+
+    setManagementLoading(true);
+    setManagementStatus("Pushing changes to current branch...");
+
+    try {
+      const container = await WebContainerService.getInstance();
+      const gitService = new GitService(container);
+
+      // Checkout the current branch first
+      setManagementStatus(`Checking out ${currentBranch}...`);
+      await gitService.checkout(clonePath, currentBranch);
+
+      // Merge the test branch into current branch
+      const testBranch = targetBranch();
+      if (testBranch) {
+        setManagementStatus(`Merging ${testBranch} into ${currentBranch}...`);
+        await gitService.merge(clonePath, testBranch);
+      }
+
+      // Push to remote
+      setManagementStatus(`Pushing to remote ${currentBranch}...`);
+      await gitService.push(clonePath, creds, (msg) => {
+        console.log(`[Git Progress] ${msg}`);
+        setManagementStatus(msg);
+      }, currentBranch);
+
+      setManagementStatus("Successfully pushed to current branch.");
+    } catch (e) {
+      console.error("[Post-Push] Error pushing to current branch:", e);
+      setManagementStatus(`Error: Failed to push to current branch: ${String(e)}`);
+    } finally {
+      setManagementLoading(false);
+    }
+  };
+
+  // Delete the test branch locally and in Amplify
+  const handleDeleteTestBranch = async () => {
+    const branchName = targetBranch();
+    const region = appState.awsConfig.selectedRegion;
+    const appId = appState.amplifyResources.selectedApp?.app_id;
+    const clonePath = appState.repository.clonePath;
+    const currentBranch = appState.amplifyResources.selectedBranch?.branch_name;
+
+    if (!branchName || !region || !appId || !clonePath || !currentBranch) {
+      setPushError("Missing information to delete branch.");
+      return;
+    }
+
+    if (!confirm(`Are you sure you want to delete the test branch '${branchName}' locally, in remote repository, and in Amplify?`)) {
+      return;
+    }
+
+    const creds = await getStoredGitCredentials();
+    if (!creds) {
+      setPushError("Git credentials not found in storage. Please go back to Step 1.");
+      return;
+    }
+
+    setManagementLoading(true);
+    setManagementStatus("Deleting test branch...");
+
+    try {
+      const container = await WebContainerService.getInstance();
+      const amplifyService = new AmplifyService();
+      const gitService = new GitService(container);
+
+      // 1. Delete in Amplify
+      setManagementStatus("Deleting branch in AWS Amplify...");
+      await amplifyService.deleteBranch(region, appId, branchName);
+
+      // 2. Delete Remote Branch
+      setManagementStatus("Deleting branch from remote repository...");
+      await gitService.deleteRemoteBranch(clonePath, creds, branchName, (msg) => {
+        setManagementStatus(msg);
+      });
+
+      // 3. Checkout the original branch before deleting the current test branch locally
+      setManagementStatus("Switching back to original branch...");
+      await gitService.checkout(clonePath, currentBranch);
+
+      // 4. Delete locally
+      setManagementStatus("Deleting local branch...");
+      await gitService.deleteBranch(clonePath, branchName);
+
+      setManagementStatus("Test branch deleted successfully.");
+      setTargetBranch(null);
+      // We might want to reset deployment mode or stay on success
+    } catch (e) {
+      console.error("[Post-Push] Error deleting test branch:", e);
+      setPushError(`Failed to delete branch: ${String(e)}`);
+      setManagementStatus(null);
+    } finally {
+      setManagementLoading(false);
+    }
+  };
+
+  const getStepTitle = () => {
+    switch (innerStep()) {
+      case 1: return "Merge Decision";
+      case 2: return "Deploy to Current Branch";
+      case 3: return "Branch Cleanup";
+      default: return "Deploy Changes";
+    }
+  };
+
+  const getStepDescription = () => {
+    switch (innerStep()) {
+      case 1: return "Choose how to merge your test deployment into the main branch.";
+      case 2: return "Deploying changes to your primary branch.";
+      case 3: return "Optionally clean up the test branch resources.";
+      default: return "Review and push your local runtime changes to AWS Amplify.";
+    }
+  };
+
+  const handleNext = () => {
+    if (innerStep() === 0) {
+      // Step 0: Initial Deploy
+      if (pushStatus() === "success") {
+        if (deploymentMode() === "test") {
+          // Test branch: Check if job is complete before moving to next step
+          const job = amplifyJob();
+          if (job && ["SUCCEED", "FAILED", "CANCELLED"].includes(job.status)) {
+            setInnerStep(1); // Move to Merge Decision
+          }
+        } else {
+          // Current branch: finish directly
+          handleFinish();
+        }
+      }
+    } else if (innerStep() === 1) {
+      // Step 1: Merge Decision
+      if (postTestSelection() === "push") {
+        // User chose to push to current branch
+        setInnerStep(2); // Move to Push to Current step
+      } else if (postTestSelection() === "manual") {
+        // User chose manual merge, skip to cleanup
+        setInnerStep(3); // Move to Cleanup step
+      }
+    } else if (innerStep() === 2) {
+      // Step 2: Push to Current Branch - move to cleanup after success
+      if (managementStatus()?.includes("Successfully pushed to current branch")) {
+        setInnerStep(3); // Move to Cleanup step
+      }
+    } else if (innerStep() === 3) {
+      // Step 3: Cleanup - finish
+      handleFinish();
+    }
+  };
+
+  const handleSubBack = () => {
+    // Disable back button once push has started or completed
+    if (pushStatus() === "running" || pushStatus() === "success") {
+      return;
+    }
+    
+    if (innerStep() > 0) {
+      // Prevent going back during loading operations
+      if (innerStep() === 2 && managementLoading()) return;
+      if (innerStep() === 3 && managementLoading()) return;
+      
+      setInnerStep(innerStep() - 1);
+    } else {
+      handleBack();
+    }
+  };
+
+  const isNextDisabled = () => {
+    if (innerStep() === 0) {
+      // Step 0: Can proceed when push is successful
+      if (pushStatus() !== "success") return true;
+      
+      // For test branch, also need to wait for job to complete
+      if (deploymentMode() === "test") {
+        const job = amplifyJob();
+        if (!job) return true; // Wait for job to be detected
+        // Only enable Next when job is in terminal state
+        return !["SUCCEED", "FAILED", "CANCELLED"].includes(job.status);
+      }
+      
+      return false;
+    }
+    if (innerStep() === 1) {
+      // Step 1: Can proceed when user makes a selection
+      return !postTestSelection();
+    }
+    if (innerStep() === 2) {
+      // Step 2: Can proceed when push to current is complete
+      return !managementStatus()?.includes("Successfully pushed to current branch");
+    }
+    if (innerStep() === 3) {
+      // Step 3: Always can finish (cleanup is optional)
+      return false;
+    }
+    return false;
+  };
+
   return (
-    <div class="step-container wide push-step">
-      <h2>Push Changes</h2>
-      <p class="step-description">
-        Review and push your changes to trigger the Amplify deployment.
-      </p>
+    <WizardStep
+      title={getStepTitle()}
+      description={getStepDescription()}
+      onNext={handleNext}
+      onBack={handleSubBack}
+      nextDisabled={isNextDisabled()}
+      backDisabled={
+        pushStatus() === "running" || 
+        pushStatus() === "success" || 
+        (innerStep() === 2 && managementLoading()) || 
+        (innerStep() === 3 && managementLoading())
+      }
+      isLoading={pushStatus() === "running" || (innerStep() === 2 && managementLoading())}
+      nextLabel={
+        innerStep() === 3 
+          ? "Finish" 
+          : innerStep() === 0 && pushStatus() === "success" && deploymentMode() === "current" 
+            ? "Finish" 
+            : "Next"
+      }
+      showNext={innerStep() === 0 ? pushStatus() === "success" : true}
+    >
+      <div class="space-y-8">
+        <Show when={innerStep() === 0}>
 
-      {/* Summary Section */}
-      <div class="summary-balanced">
-        <h3>Changes Summary</h3>
-        <div class="summary-row-balanced">
-          <div class="summary-pair-balanced half-width">
-            <span class="summary-pair-label-balanced">App:</span>
-            <span class="summary-pair-value-balanced">
-              {appState.amplifyResources.selectedApp?.name}
-            </span>
-          </div>
-          <div class="summary-pair-balanced half-width">
-            <span class="summary-pair-label-balanced">Branch:</span>
-            <span class="summary-pair-value-balanced">
-              {appState.amplifyResources.selectedBranch?.branch_name}
-            </span>
-          </div>
-        </div>
-        <div class="summary-row-balanced">
-          <div class="summary-pair-balanced half-width">
-            <span class="summary-pair-label-balanced">Target Runtime:</span>
-            <span class="badge-balanced runtime">
-              {appState.runtimeInfo.targetRuntime}
-            </span>
-          </div>
-          <div class="summary-pair-balanced half-width">
-            <span class="summary-pair-label-balanced">Backend Type:</span>
-            <span class="badge-balanced type">
-              {appState.repository.backendType === "Gen2" ? "Gen 2" : "Gen 1"}
-            </span>
-          </div>
-        </div>
-        <div class="summary-row-balanced">
-          <div class="summary-pair-balanced full-width">
-            <span class="summary-pair-label-balanced">Files Modified:</span>
-            <span class="summary-pair-value-balanced">
-              {appState.repository.changes.length > 0
-                ? `${appState.repository.changes.length} file(s)`
-                : "No manual changes (updated via package upgrade)"}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Push Action Section */}
-      <div class="push-action-section">
-        <Show when={pushStatus() === "pending"}>
-          <div class="push-ready">
-            <div class="ready-icon">✓</div>
-            <h3>Ready to Push</h3>
-            <p>
-              Your changes are ready to be committed and pushed to the remote
-              repository. This will trigger an Amplify deployment with the
-              updated runtime configuration.
-            </p>
-            <button class="push-button" onClick={handleInitiatePush}>
-              Push Changes
-            </button>
-          </div>
-        </Show>
-
-        <Show when={pushStatus() === "confirming"}>
-          <div class="confirmation-dialog">
-            <div class="confirmation-icon">⚠️</div>
-            <h3>Confirm Push</h3>
-            <p>
-              Are you sure you want to push these changes? This will commit and
-              push to the{" "}
-              <strong>
-                {appState.amplifyResources.selectedBranch?.branch_name}
-              </strong>{" "}
-              branch and trigger an Amplify deployment.
-            </p>
-            <div class="confirmation-actions">
-              <button class="cancel-button" onClick={handleCancelPush}>
-                Cancel
-              </button>
-              <button class="confirm-button" onClick={handleConfirmPush}>
-                Confirm & Push
-              </button>
+          {/* Summary Section */}
+          <div class="bg-white dark:bg-[#2a2a2a] border border-[#e0e0e0] dark:border-[#444] rounded-lg p-6 mb-8">
+            <h3 class="text-lg font-semibold mb-4 text-[#333] dark:text-[#eee]">
+              Changes Summary
+            </h3>
+            <div class="flex flex-wrap gap-x-4 gap-y-3 mb-3">
+              <div class="flex-1 basis-[calc(50%-1rem)] min-w-[200px] flex items-center gap-2">
+                <span class="font-medium text-[#666] dark:text-[#aaa] min-w-[120px]">
+                  App:
+                </span>
+                <span class="text-[#333] dark:text-[#eee]">
+                  {appState.amplifyResources.selectedApp?.name}
+                </span>
+              </div>
+              <div class="flex-1 basis-[calc(50%-1rem)] min-w-[200px] flex items-center gap-2">
+                <span class="font-medium text-[#666] dark:text-[#aaa] min-w-[120px]">
+                  Branch:
+                </span>
+                <span class="text-[#333] dark:text-[#eee]">
+                  {appState.amplifyResources.selectedBranch?.branch_name}
+                </span>
+              </div>
+            </div>
+            <div class="flex flex-wrap gap-x-4 gap-y-3 mb-3">
+              <div class="flex-1 basis-[calc(50%-1rem)] min-w-[200px] flex items-center gap-2">
+                <span class="font-medium text-[#666] dark:text-[#aaa] min-w-[120px]">
+                  Target Runtime:
+                </span>
+                <span class="px-3 py-1 bg-[#e0f2f1] text-[#00796b] dark:bg-[#1a2e2c] dark:text-[#4db6ac] rounded-md text-sm font-semibold font-mono">
+                  {appState.runtimeInfo.targetRuntime}
+                </span>
+              </div>
+              <div class="flex-1 basis-[calc(50%-1rem)] min-w-[200px] flex items-center gap-2">
+                <span class="font-medium text-[#666] dark:text-[#aaa] min-w-[120px]">
+                  Backend Type:
+                </span>
+                <span class="px-3 py-1 bg-[#e3f2fd] text-[#1976d2] dark:bg-[#1a2a3a] dark:text-[#64b5f6] rounded-md text-sm font-semibold">
+                  {appState.repository.backendType === "Gen2" ? "Gen 2" : "Gen 1"}
+                </span>
+              </div>
+            </div>
+            <div class="flex flex-wrap gap-x-4 gap-y-3">
+              <div class="w-full flex items-center gap-2">
+                <span class="font-medium text-[#666] dark:text-[#aaa] min-w-[120px]">
+                  Files Modified:
+                </span>
+                <span class="text-[#333] dark:text-[#eee]">
+                  {appState.repository.changes.length > 0
+                    ? `${appState.repository.changes.length} file(s)`
+                    : "No manual changes (updated via package upgrade)"}
+                </span>
+              </div>
             </div>
           </div>
-        </Show>
 
-        <Show when={pushStatus() === "running"}>
-          <div class="push-progress">
-            <span class="spinner"></span>
-            <h3>Pushing Changes...</h3>
-            <p>Committing and pushing to remote repository</p>
+          {/* Deployment Options */}
+          <div class="bg-white dark:bg-[#2a2a2a] border border-[#e0e0e0] dark:border-[#444] rounded-lg p-6 mb-8">
+            <h3 class="text-lg font-semibold mb-4 text-[#333] dark:text-[#eee]">
+              Deployment Options
+            </h3>
+            <div class="space-y-4">
+              <label class="flex items-center gap-3 cursor-pointer group">
+                <input
+                  type="radio"
+                  name="deploymentMode"
+                  value="current"
+                  checked={deploymentMode() === "current"}
+                  onChange={() => setDeploymentMode("current")}
+                  class="w-5 h-5 text-[#396cd8] border-gray-300 focus:ring-[#396cd8] cursor-pointer"
+                  disabled={pushStatus() === "running" || pushStatus() === "success"}
+                />
+                <div>
+                  <span class="block font-medium text-[#333] dark:text-[#eee] group-hover:text-[#396cd8] transition-colors">
+                    Deploy to current branch ({appState.amplifyResources.selectedBranch?.branch_name})
+                  </span>
+                  <span class="text-sm text-[#666] dark:text-[#aaa]">
+                    Push changes directly to the existing branch.
+                  </span>
+                </div>
+              </label>
+              <label class="flex items-center gap-3 cursor-pointer group">
+                <input
+                  type="radio"
+                  name="deploymentMode"
+                  value="test"
+                  checked={deploymentMode() === "test"}
+                  onChange={() => setDeploymentMode("test")}
+                  class="w-5 h-5 text-[#396cd8] border-gray-300 focus:ring-[#396cd8] cursor-pointer"
+                  disabled={pushStatus() === "running" || pushStatus() === "success"}
+                />
+                <div>
+                  <span class="block font-medium text-[#333] dark:text-[#eee] group-hover:text-[#396cd8] transition-colors">
+                    Deploy to a new test branch
+                  </span>
+                  <span class="text-sm text-[#666] dark:text-[#aaa]">
+                    Create a new temporary branch (test-username-timestamp) for this deployment.
+                  </span>
+                </div>
+              </label>
+            </div>
           </div>
-        </Show>
 
-        <Show when={pushStatus() === "success"}>
-          <div
-            class={`push-result ${commitHash() ? "push-success" : "push-warning"}`}
-          >
-            <Show when={commitHash()}>
-              <div class="success-icon">✓</div>
-              <h3>Successfully Pushed!</h3>
-            </Show>
-            <Show when={!commitHash()}>
-              <div class="warning-icon">⚠️</div>
-              <h3>Push Skipped</h3>
-            </Show>
-            <Show when={commitHash()}>
-              <div class="commit-info">
-                <span class="commit-label">Commit:</span>
-                <code class="commit-hash">{commitHash()}</code>
+          {/* Push Action Section */}
+          <div class="bg-white dark:bg-[#2a2a2a] border border-[#e0e0e0] dark:border-[#444] rounded-lg p-8 mb-8 min-h-[300px] flex items-center justify-center">
+            <Show when={pushStatus() === "pending"}>
+              <div class="text-center max-w-[500px]">
+                <div class="w-16 h-16 rounded-full bg-[#4caf50] text-white text-2xl flex items-center justify-center mx-auto mb-6">
+                  ✓
+                </div>
+                <h3 class="m-0 mb-4 text-xl font-semibold text-[#333] dark:text-[#eee]">
+                  Ready to Push
+                </h3>
+                <p class="text-[#666] dark:text-[#aaa] leading-relaxed mb-8">
+                  Your changes are ready to be committed and pushed to the remote
+                  repository. This will trigger an Amplify deployment with the
+                  updated runtime configuration.
+                </p>
+                <button
+                  class="bg-[#4caf50] text-white border-none px-8 py-3.5 rounded-md text-base font-semibold cursor-pointer transition-all duration-200 hover:bg-[#45a049] shadow-md hover:shadow-lg active:transform active:scale-95"
+                  onClick={handleInitiatePush}
+                >
+                  Push Changes
+                </button>
               </div>
             </Show>
 
-            {/* Amplify Job Status */}
-            <Show when={amplifyJob()}>
-              <div class="job-status-section">
-                <h4>Amplify Deployment Job</h4>
-                <div class="job-info">
-                  <div class="job-detail">
-                    <span class="job-label">Job ID:</span>
-                    <code class="job-value">{amplifyJob()?.jobId}</code>
+            <Show when={pushStatus() === "confirming"}>
+              <div class="text-center max-w-[500px]">
+                <div class="w-16 h-16 rounded-full bg-[#ff9800] text-white text-2xl flex items-center justify-center mx-auto mb-6">
+                  ⚠️
+                </div>
+                <h3 class="m-0 mb-4 text-xl font-semibold text-[#333] dark:text-[#eee]">
+                  Confirm Push
+                </h3>
+                <p class="text-[#666] dark:text-[#aaa] leading-relaxed mb-8">
+                  Are you sure you want to push these changes? This will commit and
+                  push to the{" "}
+                  <strong class="text-[#333] dark:text-[#eee] font-bold">
+                    {appState.amplifyResources.selectedBranch?.branch_name}
+                  </strong>{" "}
+                  branch and trigger an Amplify deployment.
+                </p>
+                <div class="flex justify-center gap-4">
+                  <button
+                    class="bg-transparent text-[#666] dark:text-[#aaa] border border-[#ccc] dark:border-[#555] px-6 py-3 rounded-md font-semibold cursor-pointer transition-all duration-200 hover:bg-[#f5f5f5] dark:hover:bg-[#333]"
+                    onClick={handleCancelPush}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    class="bg-[#4caf50] text-white border-none px-6 py-3 rounded-md font-semibold cursor-pointer transition-all duration-200 hover:bg-[#45a049]"
+                    onClick={handleConfirmPush}
+                  >
+                    Confirm & Push
+                  </button>
+                </div>
+              </div>
+            </Show>
+
+            <Show when={pushStatus() === "running"}>
+              <div class="text-center max-w-[500px]">
+                <span class="w-10 h-10 border-4 border-[#e0e0e0] border-t-[#396cd8] rounded-full animate-spin inline-block mb-4"></span>
+                <h3 class="m-0 mb-2 text-xl font-semibold text-[#333] dark:text-[#eee]">
+                  Pushing Changes...
+                </h3>
+                <p class="text-[#666] dark:text-[#aaa] m-0">
+                  Committing and pushing to remote repository
+                </p>
+              </div>
+            </Show>
+
+            <Show when={pushStatus() === "success"}>
+              <div
+                class={`text-center p-8 rounded-lg border transition-all duration-200 w-full ${commitHash() ? "bg-[#f0f8f0] border-[#4caf50] dark:bg-[#1a2a1a]" : "bg-[#fff8f0] border-[#f57c00] dark:bg-[#3a2a1a]"}`}
+              >
+                <Show when={commitHash()}>
+                  <div class="w-16 h-16 rounded-full bg-[#4caf50] text-white text-2xl flex items-center justify-center mx-auto mb-6">
+                    ✓
                   </div>
-                  <div class="job-detail">
-                    <span class="job-label">Status:</span>
-                    <div class="job-status-container">
-                      <span
-                        class={`job-status-badge ${amplifyJob()?.status.toLowerCase()}`}
-                      >
-                        {amplifyJob()?.status}
-                      </span>
-                      <Show when={amplifyJob()?.status === "RUNNING"}>
-                        <span class="spinner-small job-status-spinner"></span>
+                  <h3 class="text-[#15803d] dark:text-[#66bb6a] text-xl font-semibold m-4">
+                    Successfully Pushed!
+                  </h3>
+                </Show>
+                <Show when={!commitHash()}>
+                  <div class="w-16 h-16 rounded-full bg-[#f57c00] text-white text-2xl font-bold flex items-center justify-center mx-auto mb-6">
+                    ⚠️
+                  </div>
+                  <h3 class="text-[#e65100] dark:text-[#ffb74d] text-xl font-semibold m-4">
+                    Push Skipped
+                  </h3>
+                </Show>
+                <Show when={commitHash()}>
+                  <div class="flex items-center justify-center gap-2 mb-6 p-3 bg-white/50 dark:bg-[#333]/50 rounded-md border border-black/5 dark:border-white/5">
+                    <span class="text-[0.85rem] text-[#666] dark:text-[#aaa] font-medium">
+                      Commit:
+                    </span>
+                    <code class="font-mono text-[0.85rem] bg-[#e0e0e0] dark:bg-[#444] px-2 py-1 rounded text-[#333] dark:text-[#eee]">
+                      {commitHash()}
+                    </code>
+                  </div>
+                </Show>
+
+                {/* Amplify Job Status */}
+                <Show when={amplifyJob()}>
+                  <div class="mt-6 p-4 bg-[#f8f9fa] dark:bg-[#333] rounded-lg border border-[#e9ecef] dark:border-[#444] text-left">
+                    <h4 class="m-0 mb-4 text-[#495057] dark:text-[#eee] text-base font-semibold">
+                      Amplify Deployment Job
+                    </h4>
+                    <div class="flex flex-col gap-3">
+                      <div class="flex items-center gap-2">
+                        <span class="font-medium text-[#6c757d] dark:text-[#aaa] text-[0.875rem] min-w-[80px]">
+                          Job ID:
+                        </span>
+                        <code class="font-mono text-[0.85rem] bg-[#e0e0e0] dark:bg-[#444] px-2 py-1 rounded text-[#333] dark:text-[#eee]">
+                          {amplifyJob()?.jobId}
+                        </code>
+                      </div>
+                      <div class="flex items-center gap-2">
+                        <span class="font-medium text-[#6c757d] dark:text-[#aaa] text-[0.875rem] min-w-[80px]">
+                          Status:
+                        </span>
+                        <div class="flex items-center gap-2">
+                          <span
+                            class={`px-3 py-1 rounded-md text-sm font-semibold ${amplifyJob()?.status.toLowerCase() === "succeed"
+                              ? "bg-[#d4edda] text-[#155724] dark:bg-[#1b3a24] dark:text-[#81c784]"
+                              : amplifyJob()?.status.toLowerCase() === "failed"
+                                ? "bg-[#f8d7da] text-[#721c24] dark:bg-[#4a1f1f] dark:text-[#e57373]"
+                                : amplifyJob()?.status.toLowerCase() === "running"
+                                  ? "bg-[#d1ecf1] text-[#0c5460] dark:bg-[#1a2e3a] dark:text-[#7dd3fc]"
+                                  : "bg-[#e2e3e5] text-[#383d41] dark:bg-[#3a3a3a] dark:text-[#aaa]"
+                              }`}
+                          >
+                            {amplifyJob()?.status}
+                          </span>
+                          <Show when={amplifyJob()?.status === "RUNNING"}>
+                            <span class="w-3 h-3 border-2 border-[#e0f2fe] border-t-[#0ea5e9] rounded-full animate-spin"></span>
+                          </Show>
+                        </div>
+                      </div>
+                      <Show when={amplifyJob()?.startTime}>
+                        <div class="flex items-center gap-2">
+                          <span class="font-medium text-[#6c757d] dark:text-[#aaa] text-[0.875rem] min-w-[80px]">
+                            Started:
+                          </span>
+                          <span class="text-[#495057] dark:text-[#eee] text-[0.875rem]">
+                            {formatLocalDateTime(
+                              amplifyJob()!.startTime!.toISOString(),
+                            )}
+                          </span>
+                        </div>
+                      </Show>
+                      <Show when={amplifyJob()?.endTime}>
+                        <div class="flex items-center gap-2">
+                          <span class="font-medium text-[#6c757d] dark:text-[#aaa] text-[0.875rem] min-w-[80px]">
+                            Ended:
+                          </span>
+                          <span class="text-[#495057] dark:text-[#eee] text-[0.875rem]">
+                            {formatLocalDateTime(
+                              amplifyJob()!.endTime!.toISOString(),
+                            )}
+                          </span>
+                        </div>
                       </Show>
                     </div>
                   </div>
-                  <Show when={amplifyJob()?.startTime}>
-                    <div class="job-detail">
-                      <span class="job-label">Started:</span>
-                      <span class="job-value">
-                        {formatLocalDateTime(
-                          amplifyJob()!.startTime!.toISOString(),
-                        )}
-                      </span>
-                    </div>
-                  </Show>
-                  <Show when={amplifyJob()?.endTime}>
-                    <div class="job-detail">
-                      <span class="job-label">Ended:</span>
-                      <span class="job-value">
-                        {formatLocalDateTime(
-                          amplifyJob()!.endTime!.toISOString(),
-                        )}
-                      </span>
-                    </div>
-                  </Show>
-                </div>
-              </div>
-            </Show>
+                </Show>
 
-            <Show when={jobCheckError() && !commitHash()}>
-              <div class="job-check-info">
-                <p class="info-message">
-                  <Show when={checkingForJob()}>
-                    <span class="spinner-small"></span>
-                  </Show>
-                  {jobCheckError()}
-                </p>
-              </div>
-            </Show>
+                <Show when={jobCheckError() && !commitHash()}>
+                  <div class="mt-4 text-[#0066cc] dark:text-[#7dd3fc]">
+                    <p class="flex items-center justify-center gap-2 text-sm italic">
+                      <Show when={checkingForJob()}>
+                        <span class="w-3 h-3 border-2 border-[#e0f2fe] border-t-[#0ea5e9] rounded-full animate-spin"></span>
+                      </Show>
+                      {jobCheckError()}
+                    </p>
+                  </div>
+                </Show>
 
-            <Show when={jobCheckError() && commitHash()}>
-              <div class="job-check-error">
-                <p class="error-hint">
-                  <Show when={checkingForJob()}>
-                    <span class="spinner-small"></span>
-                  </Show>
-                  {jobCheckError()}
-                </p>
-              </div>
-            </Show>
+                <Show when={jobCheckError() && commitHash()}>
+                  <div class="mt-4 text-[#f57c00] dark:text-[#ffb74d]">
+                    <p class="flex items-center justify-center gap-2 text-sm italic">
+                      <Show when={checkingForJob()}>
+                        <span class="w-3 h-3 border-2 border-[#fff7ed] border-t-[#f97316] rounded-full animate-spin"></span>
+                      </Show>
+                      {jobCheckError()}
+                    </p>
+                  </div>
+                </Show>
 
-            {/* Environment Variable Changes */}
-            <Show when={getEnvVarChanges().length > 0}>
-              <div class="env-var-changes-section">
-                <h4>Environment Variable Changes</h4>
-                <div class="env-var-changes-optimized">
-                  <For each={getEnvVarChanges()}>
-                    {(change) => (
-                      <div class="env-var-change-optimized">
-                        <div class="env-var-change-line">
-                          <span class="env-var-scope">
-                            {change.level.toUpperCase()}:
-                          </span>
-                          <code class="env-var-name">{change.key}</code>
-                          <Show when={change.old_value && change.new_value}>
-                            <span class="env-var-action">updated</span>
-                            <span class="env-var-from-to">
-                              <span class="env-var-old">
-                                {change.old_value}
+                {/* Environment Variable Changes */}
+                <Show when={getEnvVarChanges().length > 0}>
+                  <div class="mt-6 p-4 bg-[#f8f9fa] dark:bg-[#333] rounded-lg border border-[#e9ecef] dark:border-[#444] text-left">
+                    <h4 class="m-0 mb-4 text-[#495057] dark:text-[#eee] text-base font-semibold">
+                      Environment Variable Changes
+                    </h4>
+                    <div class="flex flex-col gap-2 mb-4">
+                      <For each={getEnvVarChanges()}>
+                        {(change) => (
+                          <div class="p-3 bg-white dark:bg-[#444] rounded-md border border-[#dee2e6] dark:border-[#555]">
+                            <div class="flex flex-wrap items-center gap-2 text-[0.875rem]">
+                              <span class="px-2 py-0.5 bg-[#6c757d] text-white rounded text-[0.75rem] font-medium uppercase">
+                                {change.level.toUpperCase()}:
                               </span>
-                              <span class="env-var-separator">→</span>
-                              <span class="env-var-new">
-                                {change.new_value}
-                              </span>
-                            </span>
-                          </Show>
-                          <Show when={change.old_value && !change.new_value}>
-                            <span class="env-var-action removed">removed</span>
-                            <span class="env-var-old-only">
-                              was: {change.old_value}
-                            </span>
-                          </Show>
-                          <Show when={!change.old_value && change.new_value}>
-                            <span class="env-var-action added">added</span>
-                            <span class="env-var-new-only">
-                              {change.new_value}
-                            </span>
-                          </Show>
-                        </div>
-                      </div>
-                    )}
-                  </For>
-                </div>
+                              <code class="font-mono bg-[#e9ecef] dark:bg-[#555] px-1.5 py-0.5 rounded text-[#495057] dark:text-[#ddd]">
+                                {change.key}
+                              </code>
+                              <Show when={change.old_value && change.new_value}>
+                                <span class="px-2 py-0.5 bg-[#007bff] text-white rounded text-[0.75rem] font-medium">
+                                  updated
+                                </span>
+                                <span class="flex items-center gap-1 flex-wrap">
+                                  <span class="font-mono bg-[#f8d7da] text-[#721c24] px-1.5 py-0.5 rounded dark:bg-[#4a1f1f] dark:text-[#e57373]">
+                                    {change.old_value}
+                                  </span>
+                                  <span class="text-[#6c757d] dark:text-[#aaa] font-bold">
+                                    →
+                                  </span>
+                                  <span class="font-mono bg-[#d4edda] text-[#155724] px-1.5 py-0.5 rounded dark:bg-[#1b3a24] dark:text-[#81c784]">
+                                    {change.new_value}
+                                  </span>
+                                </span>
+                              </Show>
+                              <Show when={change.old_value && !change.new_value}>
+                                <span class="px-2 py-0.5 bg-[#dc3545] text-white rounded text-[0.75rem] font-medium">
+                                  removed
+                                </span>
+                                <span class="font-mono bg-[#f8d7da] text-[#721c24] px-1.5 py-0.5 rounded dark:bg-[#4a1f1f] dark:text-[#e57373]">
+                                  was: {change.old_value}
+                                </span>
+                              </Show>
+                              <Show when={!change.old_value && change.new_value}>
+                                <span class="px-2 py-0.5 bg-[#28a745] text-white rounded text-[0.75rem] font-medium">
+                                  added
+                                </span>
+                                <span class="font-mono bg-[#d4edda] text-[#155724] px-1.5 py-0.5 rounded dark:bg-[#1b3a24] dark:text-[#81c784]">
+                                  {change.new_value}
+                                </span>
+                              </Show>
+                            </div>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                    <Show
+                      when={
+                        getEnvVarChanges().filter(
+                          (c) =>
+                            c.key !== "_LIVE_UPDATES" && c.key !== "_CUSTOM_IMAGE",
+                        ).length > 0
+                      }
+                    >
+                      <button
+                        class="px-4 py-2 bg-[#ffc107] text-[#212529] border-none rounded-md text-[0.875rem] font-medium cursor-pointer transition-all duration-200 hover:bg-[#e0a800] hover:-translate-y-0.5"
+                        onClick={() => setShowRevertDialog(true)}
+                      >
+                        Revert Environment Variables
+                      </button>
+                      <p class="mt-2 text-[0.75rem] text-[#6c757d] dark:text-[#aaa] italic">
+                        Note: _LIVE_UPDATES and _CUSTOM_IMAGE changes cannot be
+                        reverted
+                      </p>
+                    </Show>
+                  </div>
+                </Show>
+
+                {/* Build Config Changes */}
                 <Show
                   when={
-                    getEnvVarChanges().filter(
-                      (c) =>
-                        c.key !== "_LIVE_UPDATES" && c.key !== "_CUSTOM_IMAGE",
-                    ).length > 0
+                    appState.repository.buildConfigChange &&
+                    appState.repository.buildConfigChange.location === "Cloud"
                   }
                 >
-                  <button
-                    class="revert-env-vars-button"
-                    onClick={() => setShowRevertDialog(true)}
-                  >
-                    Revert Environment Variables
-                  </button>
-                  <p class="revert-note">
-                    Note: _LIVE_UPDATES and _CUSTOM_IMAGE changes cannot be
-                    reverted
-                  </p>
-                </Show>
-              </div>
-            </Show>
-
-            {/* Build Config Changes */}
-            <Show
-              when={
-                appState.repository.buildConfigChange &&
-                appState.repository.buildConfigChange.location === "Cloud"
-              }
-            >
-              <div class="build-config-change-section">
-                <h4>Build Configuration Changes</h4>
-                <div class="build-config-change-item">
-                  <div class="build-config-change-header">
-                    <span class="build-config-label">Location:</span>
-                    <span class="build-config-value">
-                      Cloud (AWS Amplify buildSpec)
-                    </span>
-                  </div>
-                  <div class="build-config-change-values">
-                    <div class="build-config-old">
-                      <span class="build-config-label">Old Command:</span>
-                      <code class="build-config-command">
-                        {appState.repository.buildConfigChange?.old_command}
-                      </code>
-                    </div>
-                    <span class="build-config-arrow">→</span>
-                    <div class="build-config-new">
-                      <span class="build-config-label">New Command:</span>
-                      <code class="build-config-command">
-                        {appState.repository.buildConfigChange?.new_command}
-                      </code>
-                    </div>
-                  </div>
-                </div>
-                <button
-                  class="revert-build-spec-button"
-                  onClick={() => setShowBuildSpecRevertDialog(true)}
-                >
-                  Revert Build Configuration
-                </button>
-                <p class="revert-note">
-                  This will restore the original buildSpec in AWS Amplify
-                </p>
-              </div>
-            </Show>
-
-            <Show when={commitHash()}>
-              <div class="success-message">
-                <p>
-                  <strong>Next Steps:</strong>
-                </p>
-                <ul>
-                  <li>
-                    Monitor the deployment in the{" "}
-                    <a
-                      href={`https://${appState.awsConfig.selectedRegion}.console.aws.amazon.com/amplify/apps/${appState.amplifyResources.selectedApp?.app_id}/branches/${appState.amplifyResources.selectedBranch?.branch_name}/deployments`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      AWS Amplify Console
-                    </a>
-                  </li>
-                  <li>
-                    Verify Lambda functions are using the new runtime after
-                    deployment completes
-                  </li>
-                </ul>
-              </div>
-            </Show>
-
-            <Show when={!commitHash()}>
-              <div class="success-message">
-                {/* Show "What happened" only if no job is being tracked */}
-                <Show when={!amplifyJob()}>
-                  <p>
-                    <strong>What happened:</strong>
-                  </p>
-                  <ul>
-                    <li>All runtime configurations were already up to date</li>
-                    <li>Environment variables were updated as needed</li>
-                    <li>
-                      No file changes were required, so no commit was created
-                    </li>
-                  </ul>
-                  <Show when={lastFailedJob()}>
-                    <Show when={lastFailedJob()?.status === "FAILED"}>
-                      <div class="failed-job-notice">
-                        <p class="failed-job-text">
-                          <strong>Note:</strong> The last deployment job (ID:{" "}
-                          {lastFailedJob()?.jobId}) failed. This might be why
-                          your Lambda functions haven't been updated yet.
-                        </p>
-                        <div class="failed-job-actions">
-                          <button
-                            class="retry-job-button"
-                            onClick={handleRetryJob}
-                            disabled={retryingJob()}
-                          >
-                            {retryingJob()
-                              ? "Retrying Job..."
-                              : "Retry Failed Deployment"}
-                          </button>
-                          <a
-                            href={`https://${appState.awsConfig.selectedRegion}.console.aws.amazon.com/amplify/apps/${appState.amplifyResources.selectedApp?.app_id}/branches/${appState.amplifyResources.selectedBranch?.branch_name}/deployments`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="console-link-button"
-                          >
-                            View in AWS Console
-                          </a>
+                  <div class="mt-6 p-4 bg-[#f8f9fa] dark:bg-[#333] rounded-lg border border-[#e9ecef] dark:border-[#444] text-left">
+                    <h4 class="m-0 mb-4 text-[#495057] dark:text-[#eee] text-base font-semibold">
+                      Build Configuration Changes
+                    </h4>
+                    <div class="p-3 bg-white dark:bg-[#444] rounded-md border border-[#dee2e6] dark:border-[#555] mb-4">
+                      <div class="flex items-center gap-2 mb-3">
+                        <span class="font-medium text-[#6c757d] dark:text-[#aaa] text-[0.875rem]">
+                          Location:
+                        </span>
+                        <span class="text-[#495057] dark:text-[#eee] text-[0.875rem]">
+                          Cloud (AWS Amplify buildSpec)
+                        </span>
+                      </div>
+                      <div class="flex flex-col gap-2">
+                        <div class="flex flex-col gap-1">
+                          <span class="font-medium text-[#6c757d] dark:text-[#aaa] text-[0.875rem]">
+                            Old Command:
+                          </span>
+                          <code class="font-mono text-[0.8rem] p-2 rounded block break-all bg-[#f8d7da] text-[#721c24] border border-[#f5c6cb] dark:bg-[#4a1f1f] dark:text-[#e57373] dark:border-[#4a1f1f]">
+                            {appState.repository.buildConfigChange?.old_command}
+                          </code>
+                        </div>
+                        <span class="text-[#6c757d] dark:text-[#aaa] font-bold text-center my-1 select-none">
+                          ↓
+                        </span>
+                        <div class="flex flex-col gap-1">
+                          <span class="font-medium text-[#6c757d] dark:text-[#aaa] text-[0.875rem]">
+                            New Command:
+                          </span>
+                          <code class="font-mono text-[0.8rem] p-2 rounded block break-all bg-[#d4edda] text-[#155724] border border-[#c3e6cb] dark:bg-[#1b3a24] dark:text-[#81c784] dark:border-[#1b3a24]">
+                            {appState.repository.buildConfigChange?.new_command}
+                          </code>
                         </div>
                       </div>
-                    </Show>
-                    <Show when={lastFailedJob()?.status === "SUCCEED"}>
-                      <div class="failed-job-notice">
-                        <p class="failed-job-text">
-                          <strong>Note:</strong> The last deployment job (ID:{" "}
-                          {lastFailedJob()?.jobId}) succeeded, but your Lambda
-                          functions might have been updated outside of Amplify
-                          after that deployment. You can trigger a new
-                          deployment to ensure the runtime configurations are
-                          applied.
-                        </p>
-                        <button
-                          class="retry-job-button"
-                          onClick={handleRetryJob}
-                          disabled={retryingJob()}
-                        >
-                          {retryingJob()
-                            ? "Starting Deployment..."
-                            : "Trigger New Deployment"}
-                        </button>
-                      </div>
-                    </Show>
-                  </Show>
-                  <Show when={!lastFailedJob()}>
-                    <p class="no-deployment-note">
-                      Since no code changes were made, your Lambda functions
-                      should already be using the correct runtime versions.
+                    </div>
+                    <button
+                      class="px-4 py-2 bg-[#ffc107] text-[#212529] border-none rounded-md text-[0.875rem] font-medium cursor-pointer transition-all duration-200 hover:bg-[#e0a800] hover:-translate-y-0.5"
+                      onClick={() => setShowBuildSpecRevertDialog(true)}
+                    >
+                      Revert Build Configuration
+                    </button>
+                    <p class="mt-2 text-[0.75rem] text-[#6c757d] dark:text-[#aaa] italic">
+                      This will restore the original buildSpec in AWS Amplify
                     </p>
+                  </div>
+                </Show>
+
+                {/* Successful Push with commit (Standard or Test) */}
+                <Show when={commitHash()}>
+                  <div class="mt-6 p-4 bg-[#e8f5e9] dark:bg-[#1a2e1a] rounded-lg text-left">
+                    <p class="m-0 mb-3 font-semibold text-[#2e7d32] dark:text-[#66bb6a]">
+                      Next Steps:
+                    </p>
+                    <ul class="m-0 pl-6 text-[#666] dark:text-[#aaa] leading-relaxed list-disc">
+                      <li class="mb-2">
+                        Monitor the deployment in the{" "}
+                        <a
+                          href={`https://${appState.awsConfig.selectedRegion}.console.aws.amazon.com/amplify/apps/${appState.amplifyResources.selectedApp?.app_id}/branches/${targetBranch() || appState.amplifyResources.selectedBranch?.branch_name}/deployments`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="text-[#396cd8] dark:text-[#5c8ce6] font-medium hover:underline"
+                        >
+                          AWS Amplify Console
+                        </a>
+                      </li>
+                      <li>
+                        Verify Lambda functions are using the new runtime after
+                        deployment completes
+                      </li>
+                    </ul>
+                  </div>
+
+                  {/* Waiting for job completion message for test branches */}
+                  <Show when={deploymentMode() === "test" && amplifyJob() && !["SUCCEED", "FAILED", "CANCELLED"].includes(amplifyJob()!.status)}>
+                    <div class="mt-6 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                      <div class="flex items-center gap-3">
+                        <span class="w-5 h-5 border-2 border-blue-200 border-t-blue-500 rounded-full animate-spin"></span>
+                        <div>
+                          <p class="m-0 text-sm font-medium text-blue-700 dark:text-blue-300">
+                            Waiting for deployment to complete...
+                          </p>
+                          <p class="m-0 mt-1 text-xs text-blue-600 dark:text-blue-400">
+                            The Next button will be enabled once the Amplify job finishes.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
                   </Show>
                 </Show>
 
-                {/* Show "Next Steps" if a job is being tracked (after retry) */}
-                <Show when={amplifyJob()}>
-                  <p>
-                    <strong>Next Steps:</strong>
-                  </p>
-                  <ul>
-                    <li>
-                      Monitor the deployment in the{" "}
-                      <a
-                        href={`https://${appState.awsConfig.selectedRegion}.console.aws.amazon.com/amplify/apps/${appState.amplifyResources.selectedApp?.app_id}/branches/${appState.amplifyResources.selectedBranch?.branch_name}/deployments`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        AWS Amplify Console
-                      </a>
-                    </li>
-                    <li>
-                      Verify Lambda functions are using the new runtime after
-                      deployment completes
-                    </li>
-                  </ul>
+                {/* No changes (Standard branch flow) */}
+                <Show when={!commitHash()}>
+                  <div class="mt-6 p-4 bg-[#e8f5e9] dark:bg-[#1a2e1a] rounded-lg text-left">
+                    {/* Show "What happened" only if no job is being tracked */}
+                    <Show when={!amplifyJob()}>
+                      <p class="m-0 mb-3 font-semibold text-[#2e7d32] dark:text-[#66bb6a]">
+                        What happened:
+                      </p>
+                      <ul class="m-0 pl-6 text-[#666] dark:text-[#aaa] leading-relaxed list-disc">
+                        <li class="mb-1">
+                          All runtime configurations were already up to date
+                        </li>
+                        <li class="mb-1">
+                          Environment variables were updated as needed
+                        </li>
+                        <li>
+                          No file changes were required, so no commit was created
+                        </li>
+                      </ul>
+                      <Show when={lastFailedJob()}>
+                        <Show when={lastFailedJob()?.status === "FAILED"}>
+                          <div class="mt-4 p-4 bg-[#fff3cd] dark:bg-[#3a2e1a] border border-[#ffc107] dark:border-[#f57c00] rounded-lg">
+                            <p class="m-0 mb-3 text-[#856404] dark:text-[#ffb74d] text-sm leading-relaxed">
+                              <strong class="font-bold">Note:</strong> The last
+                              deployment job (ID: {lastFailedJob()?.jobId}) failed.
+                              This might be why your Lambda functions haven't been
+                              updated yet.
+                            </p>
+                            <div class="flex flex-wrap gap-3">
+                              <button
+                                class="px-4 py-2 bg-[#ff9800] text-white border-none rounded-md text-sm font-medium cursor-pointer transition-all duration-200 hover:bg-[#f57c00] disabled:opacity-60 disabled:cursor-not-allowed shadow-sm"
+                                onClick={handleRetryJob}
+                                disabled={retryingJob()}
+                              >
+                                {retryingJob()
+                                  ? "Retrying Job..."
+                                  : "Retry Failed Deployment"}
+                              </button>
+                              <a
+                                href={`https://${appState.awsConfig.selectedRegion}.console.aws.amazon.com/amplify/apps/${appState.amplifyResources.selectedApp?.app_id}/branches/${appState.amplifyResources.selectedBranch?.branch_name}/deployments`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                class="px-4 py-2 bg-[#396cd8] text-white rounded-md text-sm font-medium transition-all duration-200 hover:bg-[#2563eb] shadow-sm"
+                              >
+                                View in AWS Console
+                              </a>
+                            </div>
+                          </div>
+                        </Show>
+                        <Show when={lastFailedJob()?.status === "SUCCEED"}>
+                          <div class="mt-4 p-4 bg-[#fff3cd] dark:bg-[#3a2e1a] border border-[#ffc107] dark:border-[#f57c00] rounded-lg text-left">
+                            <p class="m-0 mb-3 text-[#856404] dark:text-[#ffb74d] text-sm leading-relaxed">
+                              <strong class="font-bold">Note:</strong> The last
+                              deployment job (ID: {lastFailedJob()?.jobId})
+                              succeeded, but your Lambda functions might have been
+                              updated outside of Amplify after that deployment. You
+                              can trigger a new deployment to ensure the runtime
+                              configurations are applied.
+                            </p>
+                            <button
+                              class="px-4 py-2 bg-[#ff9800] text-white border-none rounded-md text-sm font-medium cursor-pointer transition-all duration-200 hover:bg-[#f57c00] disabled:opacity-60 disabled:cursor-not-allowed shadow-sm"
+                              onClick={handleRetryJob}
+                              disabled={retryingJob()}
+                            >
+                              {retryingJob()
+                                ? "Starting Deployment..."
+                                : "Trigger New Deployment"}
+                            </button>
+                          </div>
+                        </Show>
+                      </Show>
+                      <Show when={!lastFailedJob()}>
+                        <p class="mt-4 p-3 bg-[#e7f3ff] dark:bg-[#1a2a3a] border border-[#b3d9ff] dark:border-[#396cd8] rounded-md text-[#0066cc] dark:text-[#7dd3fc] text-sm italic">
+                          Since no code changes were made, your Lambda functions
+                          should already be using the correct runtime versions.
+                        </p>
+                      </Show>
+                    </Show>
+
+                    {/* Show "Next Steps" if a job is being tracked (after retry) */}
+                    <Show when={amplifyJob()}>
+                      <p class="m-0 mb-3 font-semibold text-[#2e7d32] dark:text-[#66bb6a]">
+                        Next Steps:
+                      </p>
+                      <ul class="m-0 pl-6 text-[#666] dark:text-[#aaa] leading-relaxed list-disc">
+                        <li class="mb-2">
+                          Monitor the deployment in the{" "}
+                          <a
+                            href={`https://${appState.awsConfig.selectedRegion}.console.aws.amazon.com/amplify/apps/${appState.amplifyResources.selectedApp?.app_id}/branches/${targetBranch() || appState.amplifyResources.selectedBranch?.branch_name}/deployments`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-[#396cd8] dark:text-[#5c8ce6] font-medium hover:underline"
+                          >
+                            AWS Amplify Console
+                          </a>
+                        </li>
+                        <li>
+                          Verify Lambda functions are using the new runtime after
+                          deployment completes
+                        </li>
+                      </ul>
+                    </Show>
+                  </div>
                 </Show>
+              </div>
+            </Show>
+
+            <Show when={pushStatus() === "failed"}>
+              <div class="text-center max-w-[600px]">
+                <div class="w-16 h-16 rounded-full bg-[#f44336] text-white text-2xl flex items-center justify-center mx-auto mb-6">
+                  ✗
+                </div>
+                <h3 class="m-0 mb-4 text-[#c62828] dark:text-[#ef5350] text-xl font-semibold">
+                  Push Failed
+                </h3>
+                <div class="bg-[#ffebee] dark:bg-[#3a1a1a] p-4 rounded-lg text-left mb-4 overflow-hidden">
+                  <pre class="m-0 font-mono text-[0.85rem] text-[#c62828] dark:text-[#ff6b6b] whitespace-pre-wrap break-words">
+                    {pushError()}
+                  </pre>
+                </div>
+                <p class="text-[#666] dark:text-[#aaa] text-[0.9rem] leading-relaxed mb-6">
+                  Common issues: authentication problems, network errors, or
+                  conflicts with remote branch. Ensure you have push access to the
+                  repository.
+                </p>
+                <button
+                  class="bg-[#396cd8] text-white border-none px-6 py-2.5 rounded-md text-[0.95rem] font-medium cursor-pointer transition-all duration-200 hover:bg-[#2563eb]"
+                  onClick={handleInitiatePush}
+                >
+                  Retry Push
+                </button>
               </div>
             </Show>
           </div>
         </Show>
 
-        <Show when={pushStatus() === "failed"}>
-          <div class="push-error">
-            <div class="error-icon">✗</div>
-            <h3>Push Failed</h3>
-            <div class="error-details">
-              <pre class="error-message">{pushError()}</pre>
+        <Show when={innerStep() === 1}>
+          {/* Inner Step 1: Selection View */}
+          <div class="space-y-6">
+            <div class="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-100 dark:border-blue-800 text-blue-700 dark:text-blue-300">
+              <p class="m-0 text-sm leading-relaxed">
+                You've successfully deployed to the test branch <strong>{targetBranch()}</strong>.
+                How would you like to proceed with the changes?
+              </p>
             </div>
-            <p class="error-hint">
-              Common issues: authentication problems, network errors, or
-              conflicts with remote branch. Ensure you have push access to the
-              repository.
-            </p>
-            <button class="retry-button" onClick={handleInitiatePush}>
-              Retry Push
-            </button>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <button
+                class={`p-6 rounded-xl border-2 text-left transition-all duration-200 cursor-pointer ${postTestSelection() === "push"
+                  ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 ring-2 ring-blue-500/20"
+                  : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-600"
+                  }`}
+                onClick={() => setPostTestSelection("push")}
+              >
+                <div class="flex items-center gap-3 mb-3">
+                  <span class="text-2xl">🚀</span>
+                  <h4 class="m-0 text-lg font-semibold text-gray-900 dark:text-white">Push to Current</h4>
+                </div>
+                <p class="m-0 text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+                  Automatically push the verified changes from the test branch to your main branch (<strong>{appState.amplifyResources.selectedBranch?.branch_name}</strong>).
+                </p>
+              </button>
+
+              <button
+                class={`p-6 rounded-xl border-2 text-left transition-all duration-200 cursor-pointer ${postTestSelection() === "manual"
+                  ? "border-blue-500 bg-blue-50 dark:bg-blue-900/30 ring-2 ring-blue-500/20"
+                  : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-600"
+                  }`}
+                onClick={() => setPostTestSelection("manual")}
+              >
+                <div class="flex items-center gap-3 mb-3">
+                  <span class="text-2xl">📝</span>
+                  <h4 class="m-0 text-lg font-semibold text-gray-900 dark:text-white">Manual Merge</h4>
+                </div>
+                <p class="m-0 text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+                  You will handle the merge manually through your Git provider. No further actions will be taken here.
+                </p>
+              </button>
+            </div>
+          </div>
+        </Show>
+
+        <Show when={innerStep() === 2}>
+          {/* Inner Step 2: Final Push to Current Branch */}
+          <div class="space-y-6">
+            <div class="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-100 dark:border-blue-800 text-blue-700 dark:text-blue-300">
+              <p class="m-0 text-sm leading-relaxed">
+                Merging and pushing changes from <strong>{targetBranch()}</strong> to <strong>{appState.amplifyResources.selectedBranch?.branch_name}</strong>.
+              </p>
+            </div>
+
+            <div class="bg-white dark:bg-gray-800 p-8 rounded-xl border border-gray-200 dark:border-gray-700 min-h-[300px] flex items-center justify-center">
+              <Show when={managementLoading()}>
+                <div class="text-center max-w-[500px]">
+                  <div class="w-16 h-16 border-4 border-blue-100 border-t-blue-500 rounded-full animate-spin mx-auto mb-6"></div>
+                  <h3 class="m-0 mb-4 text-xl font-semibold text-gray-900 dark:text-white">
+                    Deploying to {appState.amplifyResources.selectedBranch?.branch_name}...
+                  </h3>
+                  <div class="p-4 bg-gray-50 dark:bg-gray-900 rounded-lg border border-dashed border-gray-300 dark:border-gray-600">
+                    <pre class="m-0 text-xs text-gray-600 dark:text-gray-400 font-mono whitespace-pre-wrap">
+                      {managementStatus() || "Preparing to push..."}
+                    </pre>
+                  </div>
+                </div>
+              </Show>
+
+              <Show when={!managementLoading() && !managementStatus()}>
+                <div class="text-center max-w-[500px]">
+                  <div class="w-16 h-16 rounded-full bg-blue-500 text-white text-2xl flex items-center justify-center mx-auto mb-6">
+                    🚀
+                  </div>
+                  <h3 class="m-0 mb-4 text-xl font-semibold text-gray-900 dark:text-white">
+                    Ready to Deploy
+                  </h3>
+                  <p class="text-gray-600 dark:text-gray-400 leading-relaxed mb-8">
+                    Click the button below to merge and push your changes to the main branch.
+                  </p>
+                  <button
+                    class="bg-blue-500 text-white border-none px-8 py-3.5 rounded-md text-base font-semibold cursor-pointer transition-all duration-200 hover:bg-blue-600 shadow-md hover:shadow-lg active:transform active:scale-95"
+                    onClick={handlePushToCurrent}
+                  >
+                    Push to {appState.amplifyResources.selectedBranch?.branch_name}
+                  </button>
+                </div>
+              </Show>
+
+              <Show when={!managementLoading() && managementStatus()?.includes("Successfully")}>
+                <div class="text-center max-w-[500px]">
+                  <div class="w-16 h-16 rounded-full bg-green-500 text-white text-2xl flex items-center justify-center mx-auto mb-6">
+                    ✓
+                  </div>
+                  <h3 class="m-0 mb-4 text-xl font-semibold text-green-700 dark:text-green-400">
+                    Successfully Deployed!
+                  </h3>
+                  <div class="p-4 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
+                    <p class="m-0 text-sm text-green-700 dark:text-green-300">
+                      {managementStatus()}
+                    </p>
+                  </div>
+                  <p class="mt-4 text-gray-600 dark:text-gray-400 text-sm">
+                    Click Next to proceed to cleanup options.
+                  </p>
+                </div>
+              </Show>
+
+              <Show when={!managementLoading() && managementStatus()?.includes("Error")}>
+                <div class="text-center max-w-[500px]">
+                  <div class="w-16 h-16 rounded-full bg-red-500 text-white text-2xl flex items-center justify-center mx-auto mb-6">
+                    ✗
+                  </div>
+                  <h3 class="m-0 mb-4 text-xl font-semibold text-red-700 dark:text-red-400">
+                    Deployment Failed
+                  </h3>
+                  <div class="p-4 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
+                    <pre class="m-0 text-sm text-red-700 dark:text-red-300 whitespace-pre-wrap font-mono">
+                      {managementStatus()}
+                    </pre>
+                  </div>
+                  <button
+                    class="mt-6 bg-blue-500 text-white border-none px-6 py-2.5 rounded-md text-sm font-semibold cursor-pointer transition-all duration-200 hover:bg-blue-600"
+                    onClick={handlePushToCurrent}
+                  >
+                    Retry Push
+                  </button>
+                </div>
+              </Show>
+            </div>
+          </div>
+        </Show>
+
+        <Show when={innerStep() === 3}>
+          {/* Inner Step 3: Cleanup & Finish */}
+          <div class="space-y-6">
+            <div class="text-center py-4">
+              <div class="w-16 h-16 bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">
+                ✓
+              </div>
+              <h3 class="m-0 text-xl font-semibold text-gray-900 dark:text-white">
+                Deployment Complete!
+              </h3>
+              <p class="mt-2 text-gray-600 dark:text-gray-400">
+                <Show when={postTestSelection() === "push"}>
+                  Your changes have been successfully deployed to <strong>{appState.amplifyResources.selectedBranch?.branch_name}</strong>.
+                </Show>
+                <Show when={postTestSelection() === "manual"}>
+                  Your test deployment is complete. You can now merge manually through your Git provider.
+                </Show>
+              </p>
+            </div>
+
+            <Show when={targetBranch()}>
+              <div class="bg-gray-50 dark:bg-gray-800 p-6 rounded-xl border border-gray-200 dark:border-gray-700">
+                <h4 class="m-0 mb-4 text-gray-900 dark:text-white font-semibold flex items-center gap-2">
+                  <span class="text-lg">🧹</span> Optional: Clean Up Test Branch
+                </h4>
+                <p class="m-0 mb-6 text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+                  The test branch <code class="px-2 py-1 bg-gray-200 dark:bg-gray-700 rounded font-mono text-xs">{targetBranch()}</code> is no longer needed. 
+                  You can delete it locally, remotely, and in AWS Amplify, or keep it for reference.
+                </p>
+
+                <Show when={managementStatus()?.includes("deleted successfully")}>
+                  <div class="p-3 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 text-sm rounded mb-4 border border-green-200 dark:border-green-800">
+                    ✓ Test branch has been successfully deleted.
+                  </div>
+                </Show>
+
+                <Show when={!managementStatus()?.includes("deleted successfully")}>
+                  <button
+                    class="px-6 py-2.5 bg-red-500 text-white border-none rounded-md text-sm font-semibold cursor-pointer transition-all duration-200 hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+                    onClick={handleDeleteTestBranch}
+                    disabled={managementLoading()}
+                  >
+                    {managementLoading() ? "Deleting Branch..." : "Delete Test Branch"}
+                  </button>
+                </Show>
+
+                <Show when={managementStatus() && !managementStatus()?.includes("deleted successfully") && !managementStatus()?.includes("Successfully pushed")}>
+                  <div class="mt-4 p-3 bg-gray-100 dark:bg-gray-900 rounded border border-gray-200 dark:border-gray-700">
+                    <p class="m-0 text-xs font-mono text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
+                      {managementStatus()}
+                    </p>
+                  </div>
+                </Show>
+              </div>
+            </Show>
+
+            <div class="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-lg border border-blue-100 dark:border-blue-800">
+              <p class="m-0 text-sm text-blue-700 dark:text-blue-300 leading-relaxed">
+                <strong>Next Steps:</strong> Monitor your deployment in the{" "}
+                <a
+                  href={`https://${appState.awsConfig.selectedRegion}.console.aws.amazon.com/amplify/apps/${appState.amplifyResources.selectedApp?.app_id}/branches/${appState.amplifyResources.selectedBranch?.branch_name}/deployments`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="text-blue-600 dark:text-blue-400 font-medium hover:underline"
+                >
+                  AWS Amplify Console
+                </a>{" "}
+                and verify Lambda functions are using the new runtime.
+              </p>
+            </div>
+
+            <div class="text-center pt-4">
+              <p class="text-gray-600 dark:text-gray-400 text-sm">
+                Click Finish to complete the wizard.
+              </p>
+            </div>
           </div>
         </Show>
       </div>
 
-      {/* Actions */}
-      <div class="actions">
-        <button
-          onClick={handleBack}
-          class="secondary-button"
-          disabled={pushStatus() === "running"}
-        >
-          Back
-        </button>
-        <Show when={pushStatus() === "success"}>
-          <button onClick={handleFinish} class="primary-button">
-            Finish
-          </button>
-        </Show>
-      </div>
-
-      {/* Revert Confirmation Dialog */}
+      {/* Revert Environment Variables Dialog */}
       <Show when={showRevertDialog()}>
-        <div class="revert-dialog-overlay">
-          <div class="revert-dialog">
-            <h3>Revert Environment Variables</h3>
-            <p>
+        <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-[1000]">
+          <div class="bg-white dark:bg-[#2a2a2a] rounded-xl p-6 max-w-[500px] w-[90%] max-h-[80vh] overflow-y-auto shadow-2xl">
+            <h3 class="m-0 mb-4 text-[#495057] dark:text-[#eee] text-xl font-semibold">
+              Revert Environment Variables
+            </h3>
+            <p class="m-0 mb-4 text-[#6c757d] dark:text-[#aaa] leading-relaxed">
               Are you sure you want to revert the environment variable changes?
               This will restore the original values.
             </p>
-            <div class="revert-changes-list">
+            <div class="flex flex-col gap-2 mb-6 max-h-[200px] overflow-y-auto pr-1">
               <For
                 each={getEnvVarChanges().filter(
                   (c) => c.key !== "_LIVE_UPDATES" && c.key !== "_CUSTOM_IMAGE",
                 )}
               >
                 {(change) => (
-                  <div class="revert-change-item">
-                    <span class="revert-level-badge">{change.level}</span>
-                    <code class="revert-key">{change.key}</code>
-                    <span class="revert-arrow">←</span>
-                    <span class="revert-value">{change.old_value}</span>
+                  <div class="flex items-center gap-2 p-2 bg-[#f8f9fa] dark:bg-[#333] rounded-md text-[0.875rem]">
+                    <span class="px-2 py-0.5 bg-[#6c757d] text-white rounded text-[0.75rem] font-medium uppercase">
+                      {change.level}
+                    </span>
+                    <code class="font-mono bg-white dark:bg-[#444] px-1.5 py-0.5 rounded text-[#495057] dark:text-[#ddd]">
+                      {change.key}
+                    </code>
+                    <span class="text-[#ffc107] font-bold">←</span>
+                    <span class="text-[#28a745] dark:text-[#81c784] font-mono bg-[#d4edda] dark:bg-[#1b3a24] px-1.5 py-0.5 rounded">
+                      {change.old_value}
+                    </span>
                   </div>
                 )}
               </For>
             </div>
-            <div class="revert-dialog-actions">
+            <div class="flex justify-end gap-3">
               <button
-                class="cancel-revert-button"
+                class="px-4 py-2 bg-[#6c757d] text-white border-none rounded-md text-sm cursor-pointer transition-all duration-200 hover:bg-[#5a6268] disabled:opacity-60 disabled:cursor-not-allowed"
                 onClick={handleCancelRevert}
                 disabled={revertInProgress()}
               >
                 Cancel
               </button>
               <button
-                class="confirm-revert-button"
+                class="px-4 py-2 bg-[#ffc107] text-[#212529] border-none rounded-md text-sm font-medium cursor-pointer transition-all duration-200 hover:bg-[#e0a800] disabled:opacity-60 disabled:cursor-not-allowed"
                 onClick={handleRevertEnvVars}
                 disabled={revertInProgress()}
               >
@@ -1269,35 +1969,41 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
 
       {/* Build Spec Revert Confirmation Dialog */}
       <Show when={showBuildSpecRevertDialog()}>
-        <div class="revert-dialog-overlay">
-          <div class="revert-dialog">
-            <h3>Revert Build Configuration</h3>
-            <p>
+        <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-[1000]">
+          <div class="bg-white dark:bg-[#2a2a2a] rounded-xl p-6 max-w-[500px] w-[90%] max-h-[80vh] overflow-y-auto shadow-2xl">
+            <h3 class="m-0 mb-4 text-[#495057] dark:text-[#eee] text-xl font-semibold">
+              Revert Build Configuration
+            </h3>
+            <p class="m-0 mb-4 text-[#6c757d] dark:text-[#aaa] leading-relaxed">
               Are you sure you want to revert the build configuration changes?
               This will restore the original buildSpec in AWS Amplify.
             </p>
-            <div class="revert-changes-list">
+            <div class="flex flex-col gap-2 mb-6">
               <Show when={appState.repository.buildConfigChange}>
-                <div class="revert-change-item">
-                  <span class="revert-level-badge">cloud</span>
-                  <code class="revert-key">Build Command</code>
-                  <span class="revert-arrow">←</span>
-                  <span class="revert-value">
+                <div class="flex items-center gap-2 p-2 bg-[#f8f9fa] dark:bg-[#333] rounded-md text-[0.875rem]">
+                  <span class="px-2 py-0.5 bg-[#6c757d] text-white rounded text-[0.75rem] font-medium uppercase">
+                    cloud
+                  </span>
+                  <code class="font-mono bg-white dark:bg-[#444] px-1.5 py-0.5 rounded text-[#495057] dark:text-[#ddd]">
+                    Build Command
+                  </code>
+                  <span class="text-[#ffc107] font-bold">←</span>
+                  <span class="text-[#28a745] dark:text-[#81c784] font-mono bg-[#d4edda] dark:bg-[#1b3a24] px-1.5 py-0.5 rounded">
                     {appState.repository.buildConfigChange?.old_command}
                   </span>
                 </div>
               </Show>
             </div>
-            <div class="revert-dialog-actions">
+            <div class="flex justify-end gap-3">
               <button
-                class="cancel-revert-button"
+                class="px-4 py-2 bg-[#6c757d] text-white border-none rounded-md text-sm cursor-pointer transition-all duration-200 hover:bg-[#5a6268] disabled:opacity-60 disabled:cursor-not-allowed"
                 onClick={handleCancelBuildSpecRevert}
                 disabled={revertBuildSpecInProgress()}
               >
                 Cancel
               </button>
               <button
-                class="confirm-revert-button"
+                class="px-4 py-2 bg-[#ffc107] text-[#212529] border-none rounded-md text-sm font-medium cursor-pointer transition-all duration-200 hover:bg-[#e0a800] disabled:opacity-60 disabled:cursor-not-allowed"
                 onClick={handleRevertBuildSpec}
                 disabled={revertBuildSpecInProgress()}
               >
@@ -1309,14 +2015,7 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
           </div>
         </div>
       </Show>
-
-      {/* Cleanup Dialog */}
-      <CleanupDialog
-        show={showCleanupDialog()}
-        onClose={handleCleanupClose}
-        resetToStep={2}
-      />
-    </div>
+    </WizardStep>
   );
 }
 

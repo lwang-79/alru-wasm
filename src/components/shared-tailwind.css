@@ -1,0 +1,153 @@
+/* Shared Tailwind Component Utilities */
+
+/* These are common class combinations used across components.
+   Import this file where you need these patterns. */
+
+/* Step Container */
+.step-container {
+  @apply max-w-[600px] mx-auto opacity-100 animate-[fadeIn_0.1s_ease-in];
+}
+
+.step-container-wide {
+  @apply max-w-[800px] mx-auto opacity-100 animate-[fadeIn_0.1s_ease-in];
+}
+
+/* Buttons */
+.btn-primary {
+  @apply bg-[#396cd8] dark:bg-[#5c8ce6] text-white border-none px-6 py-3 rounded-lg font-medium cursor-pointer transition-all duration-200 hover:bg-[#2d5bb8] dark:hover:bg-[#4a7ad4] disabled:bg-[#ccc] dark:disabled:bg-[#444] dark:disabled:text-[#888] disabled:cursor-not-allowed;
+}
+
+.btn-secondary {
+  @apply bg-transparent text-[#666] dark:text-[#aaa] border border-[#ccc] dark:border-[#555] px-6 py-3 rounded-lg font-medium cursor-pointer transition-all duration-200 hover:bg-[#f5f5f5] dark:hover:bg-[#333] hover:border-[#999] dark:hover:border-[#666] disabled:opacity-60 disabled:cursor-not-allowed;
+}
+
+.btn-danger {
+  @apply bg-[#dc3545] text-white border-none px-6 py-3 rounded-lg font-medium cursor-pointer transition-all duration-200 hover:bg-[#c82333] disabled:opacity-60 disabled:cursor-not-allowed;
+}
+
+/* Form Elements */
+.form-group {
+  @apply mb-6;
+}
+
+.form-label {
+  @apply block mb-2 font-medium text-[#333] dark:text-[#eee];
+}
+
+.form-input,
+.form-select {
+  @apply w-full px-4 py-3 border border-[#ddd] dark:border-[#555] rounded-lg bg-white dark:bg-[#333] text-[#333] dark:text-[#eee] transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[#396cd8] dark:focus:ring-[#5b8def] focus:border-transparent;
+}
+
+/* Fix browser autofill background in dark mode */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-transition: color 9999s ease-out, background-color 9999s ease-out;
+  -webkit-transition-delay: 9999s;
+}
+
+.dark input:-webkit-autofill,
+.dark input:-webkit-autofill:hover,
+.dark input:-webkit-autofill:focus,
+.dark input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 30px #333 inset !important;
+  -webkit-text-fill-color: #eee !important;
+}
+
+.form-textarea {
+  @apply w-full px-4 py-3 border border-[#ddd] dark:border-[#555] rounded-lg bg-white dark:bg-[#333] text-[#333] dark:text-[#eee] transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[#396cd8] dark:focus:ring-[#5b8def] focus:border-transparent resize-none font-mono text-sm;
+}
+
+/* Messages */
+.message-error {
+  @apply p-4 border border-[#fcc] dark:border-[#c00] rounded-lg bg-[#fee] dark:bg-[#3a1a1a] text-[#c00] dark:text-[#ff6b6b] my-4;
+}
+
+.message-warning {
+  @apply p-4 border border-[#ffcc80] dark:border-[#f57c00] rounded-lg bg-[#fff3e0] dark:bg-[#3a2a1a] text-[#f57c00] dark:text-[#ffb74d] my-4;
+}
+
+.message-success {
+  @apply p-4 border border-[#c8e6c9] dark:border-[#2e7d32] rounded-lg bg-[#e8f5e9] dark:bg-[#1a3a1a] text-[#2e7d32] dark:text-[#81c784] my-4;
+}
+
+.message-info {
+  @apply p-4 border border-[#bae6fd] dark:border-[#0369a1] rounded-lg bg-[#f0f9ff] dark:bg-[#1a2a3a] text-[#0369a1] dark:text-[#7dd3fc] my-4;
+}
+
+.message-neutral {
+  @apply p-4 border border-[#e0e0e0] dark:border-[#555] rounded-lg bg-[#f5f5f5] dark:bg-[#2a2a2a] text-[#666] dark:text-[#aaa] my-4;
+}
+
+/* Loading States */
+.loading-container {
+  @apply flex flex-col items-center justify-center p-12 gap-4;
+}
+
+.loading-inline {
+  @apply flex items-center gap-2 p-3 text-[#666] dark:text-[#aaa] text-[0.95rem];
+}
+
+.spinner {
+  @apply w-10 h-10 border-[3px] border-[#e0e0e0] dark:border-[#444] border-t-[#396cd8] dark:border-t-[#5b8def] rounded-full animate-spin;
+}
+
+.spinner-small {
+  @apply w-4 h-4 border-2 border-[#e0e0e0] dark:border-[#444] border-t-[#396cd8] dark:border-t-[#5b8def] rounded-full animate-spin inline-block;
+}
+
+/* Code Blocks */
+.code-block {
+  @apply bg-[#f5f5f5] dark:bg-[#1a1a1a] border border-[#ddd] dark:border-[#444] rounded-lg p-4 font-mono text-sm overflow-x-auto;
+}
+
+.inline-code {
+  @apply bg-[#e9ecef] dark:bg-[#444] px-1.5 py-0.5 rounded text-[0.85rem] font-mono dark:text-[#ddd];
+}
+
+/* Cards */
+.card {
+  @apply bg-white dark:bg-[#2a2a2a] border border-[#ddd] dark:border-[#444] rounded-lg p-6 transition-all duration-200;
+}
+
+.card-hover {
+  @apply bg-white dark:bg-[#2a2a2a] border border-[#ddd] dark:border-[#444] rounded-lg p-6 transition-all duration-200 hover:border-[#396cd8] dark:hover:border-[#5b8def] hover:shadow-lg cursor-pointer;
+}
+
+/* Badges */
+.badge {
+  @apply inline-block px-3 py-1 rounded-full text-xs font-semibold;
+}
+
+.badge-primary {
+  @apply bg-[#396cd8] text-white;
+}
+
+.badge-success {
+  @apply bg-[#22c55e] text-white;
+}
+
+.badge-warning {
+  @apply bg-[#f59e0b] text-white;
+}
+
+.badge-danger {
+  @apply bg-[#ef4444] text-white;
+}
+
+.badge-neutral {
+  @apply bg-[#6b7280] text-white;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}

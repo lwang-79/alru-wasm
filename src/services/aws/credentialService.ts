@@ -21,6 +21,7 @@ export interface GitCredentials {
  */
 export interface AllCredentials extends AWSCredentials {
   git?: GitCredentials;
+  repositoryProvider?: "GitHub" | "CodeCommit";
 }
 
 /**

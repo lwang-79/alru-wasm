@@ -9,6 +9,8 @@ import {
   ListJobsCommand,
   GetJobCommand,
   StartJobCommand,
+  CreateBranchCommand,
+  DeleteBranchCommand,
   type App,
   type Branch,
   type JobSummary,
@@ -278,34 +280,156 @@ export class AmplifyService {
     const changes: string[] = [];
     let updated = false;
 
+    // Fetch latest CLI version for _LIVE_UPDATES check
+    const latestCliVersion = await this.fetchLatestAmplifyCliVersion();
+
     // Check app-level
     const app = await this.getApp(region, appId);
-    if (app.environmentVariables["_CUSTOM_IMAGE"]?.startsWith("amplify:")) {
-      delete app.environmentVariables["_CUSTOM_IMAGE"];
+    let appNeedsUpdate = false;
+    const updatedAppEnvVars = { ...app.environmentVariables };
+
+    // Check _CUSTOM_IMAGE
+    if (updatedAppEnvVars["_CUSTOM_IMAGE"]?.startsWith("amplify:")) {
+      delete updatedAppEnvVars["_CUSTOM_IMAGE"];
+      changes.push("App: Removed legacy _CUSTOM_IMAGE (now using default latest Amplify image)");
+      appNeedsUpdate = true;
+    }
+
+    // Check AMPLIFY_BACKEND_PULL_ONLY
+    if (updatedAppEnvVars["AMPLIFY_BACKEND_PULL_ONLY"] === "true") {
+      updatedAppEnvVars["AMPLIFY_BACKEND_PULL_ONLY"] = "false";
+      changes.push("App: AMPLIFY_BACKEND_PULL_ONLY → true to false");
+      appNeedsUpdate = true;
+    }
+
+    // Check _LIVE_UPDATES
+    if (updatedAppEnvVars["_LIVE_UPDATES"]) {
+      const updateResult = this.updateLiveUpdatesIfNeeded(
+        updatedAppEnvVars["_LIVE_UPDATES"],
+        latestCliVersion
+      );
+      if (updateResult.updated) {
+        updatedAppEnvVars["_LIVE_UPDATES"] = updateResult.value;
+        changes.push(`App: _LIVE_UPDATES → @aws-amplify/cli version set to ${latestCliVersion}`);
+        appNeedsUpdate = true;
+      }
+    }
+
+    if (appNeedsUpdate) {
       await this.updateAppEnvironmentVariables(
         region,
         appId,
-        app.environmentVariables,
+        updatedAppEnvVars,
       );
-      changes.push("Removed legacy _CUSTOM_IMAGE from app");
+      updated = true;
+    }
+
+    // Check branch-level
+    const branch = await this.getBranch(region, appId, branchName);
+    let branchNeedsUpdate = false;
+    const updatedBranchEnvVars = { ...branch.environmentVariables };
+
+    // Check _CUSTOM_IMAGE
+    if (updatedBranchEnvVars["_CUSTOM_IMAGE"]?.startsWith("amplify:")) {
+      delete updatedBranchEnvVars["_CUSTOM_IMAGE"];
+      changes.push(`Branch: Removed legacy _CUSTOM_IMAGE (now using default latest Amplify image)`);
+      branchNeedsUpdate = true;
+    }
+
+    // Check AMPLIFY_BACKEND_PULL_ONLY
+    if (updatedBranchEnvVars["AMPLIFY_BACKEND_PULL_ONLY"] === "true") {
+      updatedBranchEnvVars["AMPLIFY_BACKEND_PULL_ONLY"] = "false";
+      changes.push(`Branch: AMPLIFY_BACKEND_PULL_ONLY → true to false`);
+      branchNeedsUpdate = true;
+    }
+
+    if (branchNeedsUpdate) {
+      await this.updateBranchEnvironmentVariables(
+        region,
+        appId,
+        branchName,
+        updatedBranchEnvVars,
+      );
+      updated = true;
+    }
+
+    return { updated, changes };
+  }
+
+  /**
+   * Remove only _CUSTOM_IMAGE (Gen2 apps)
+   */
+  async removeCustomImageOnly(
+    region: string,
+    appId: string,
+    branchName: string,
+  ): Promise<{ updated: boolean; changes: string[] }> {
+    const changes: string[] = [];
+    let updated = false;
+
+    // Check app-level
+    const app = await this.getApp(region, appId);
+    if (app.environmentVariables["_CUSTOM_IMAGE"]?.startsWith("amplify:")) {
+      const updatedEnvVars = { ...app.environmentVariables };
+      delete updatedEnvVars["_CUSTOM_IMAGE"];
+      await this.updateAppEnvironmentVariables(region, appId, updatedEnvVars);
+      changes.push("App: Removed legacy _CUSTOM_IMAGE (now using default latest Amplify image)");
       updated = true;
     }
 
     // Check branch-level
     const branch = await this.getBranch(region, appId, branchName);
     if (branch.environmentVariables["_CUSTOM_IMAGE"]?.startsWith("amplify:")) {
-      delete branch.environmentVariables["_CUSTOM_IMAGE"];
-      await this.updateBranchEnvironmentVariables(
-        region,
-        appId,
-        branchName,
-        branch.environmentVariables,
-      );
-      changes.push("Removed legacy _CUSTOM_IMAGE from branch");
+      const updatedEnvVars = { ...branch.environmentVariables };
+      delete updatedEnvVars["_CUSTOM_IMAGE"];
+      await this.updateBranchEnvironmentVariables(region, appId, branchName, updatedEnvVars);
+      changes.push("Branch: Removed legacy _CUSTOM_IMAGE (now using default latest Amplify image)");
       updated = true;
     }
 
     return { updated, changes };
+  }
+
+  /**
+   * Fetch latest @aws-amplify/cli version from npm registry
+   */
+  private async fetchLatestAmplifyCliVersion(): Promise<string> {
+    try {
+      const response = await fetch('https://registry.npmjs.org/@aws-amplify/cli/latest');
+      const data = await response.json();
+      return data.version;
+    } catch (error) {
+      console.warn('Failed to fetch latest CLI version:', error);
+      return 'latest';
+    }
+  }
+
+  /**
+   * Update _LIVE_UPDATES if CLI version is outdated
+   */
+  private updateLiveUpdatesIfNeeded(
+    liveUpdatesJson: string,
+    latestVersion: string
+  ): { updated: boolean; value: string } {
+    try {
+      const entries = JSON.parse(liveUpdatesJson) as Array<{ pkg: string; version: string }>;
+      const cliEntry = entries.find(e => e.pkg === '@aws-amplify/cli');
+
+      if (!cliEntry) {
+        return { updated: false, value: liveUpdatesJson };
+      }
+
+      if (cliEntry.version === 'latest' || cliEntry.version === latestVersion) {
+        return { updated: false, value: liveUpdatesJson };
+      }
+
+      // Update version
+      cliEntry.version = latestVersion;
+      return { updated: true, value: JSON.stringify(entries) };
+    } catch (error) {
+      console.warn('Failed to parse _LIVE_UPDATES:', error);
+      return { updated: false, value: liveUpdatesJson };
+    }
   }
 
   /**
@@ -389,13 +513,13 @@ export class AmplifyService {
     const job = response.job;
 
     return {
-      jobId: job.summary.jobId!,
-      status: job.summary.status!,
-      commitId: job.summary.commitId || "",
-      commitMessage: job.summary.commitMessage || "",
-      startTime: job.summary.startTime,
-      endTime: job.summary.endTime,
-      summary: job.summary as Record<string, string>,
+      jobId: job.summary?.jobId || "",
+      status: job.summary?.status || "PENDING",
+      commitId: job.summary?.commitId || "",
+      commitMessage: job.summary?.commitMessage || "",
+      startTime: job.summary?.startTime,
+      endTime: job.summary?.endTime,
+      summary: (job.summary as unknown) as Record<string, string>,
     };
   }
 
@@ -447,7 +571,7 @@ export class AmplifyService {
       commitMessage: job.commitMessage || "",
       startTime: job.startTime,
       endTime: job.endTime,
-      summary: job as Record<string, string>,
+      summary: (job as unknown) as Record<string, string>,
     };
   }
 
@@ -470,6 +594,54 @@ export class AmplifyService {
       new UpdateAppCommand({
         appId,
         buildSpec: originalBuildSpec,
+      }),
+    );
+  }
+
+  /**
+   * Create a new branch in Amplify app
+   *
+   * @param region AWS region
+   * @param appId Amplify app ID
+   * @param branchName Branch name
+   * @param description Optional description
+   */
+  async createBranch(
+    region: string,
+    appId: string,
+    branchName: string,
+    description?: string,
+  ): Promise<void> {
+    const client = this.getClient(region);
+
+    await client.send(
+      new CreateBranchCommand({
+        appId,
+        branchName,
+        description,
+        enableAutoBuild: true,
+      }),
+    );
+  }
+
+  /**
+   * Delete a branch in Amplify app
+   *
+   * @param region AWS region
+   * @param appId Amplify app ID
+   * @param branchName Branch name
+   */
+  async deleteBranch(
+    region: string,
+    appId: string,
+    branchName: string,
+  ): Promise<void> {
+    const client = this.getClient(region);
+
+    await client.send(
+      new DeleteBranchCommand({
+        appId,
+        branchName,
       }),
     );
   }

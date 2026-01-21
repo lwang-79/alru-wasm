@@ -63,7 +63,7 @@ export interface NodeVersion {
 // File operations types
 export type BackendType = "Gen1" | "Gen2";
 
-export type PackageManager = "Npm" | "Yarn" | "Pnpm" | "Bun";
+export type PackageManager = "npm" | "yarn" | "pnpm" | "bun";
 
 export interface FileChange {
   path: string;
@@ -156,10 +156,4 @@ export interface AmplifyJob {
   start_time: string | null;
 }
 
-export interface AmplifyJobDetails {
-  job_id: string;
-  commit_id: string;
-  status: string;
-  start_time: string | null;
-  end_time: string | null;
-}
+// AmplifyJobDetails is defined in services/aws/amplifyService.ts

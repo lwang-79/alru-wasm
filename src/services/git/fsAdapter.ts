@@ -34,9 +34,10 @@ export function createFsAdapter(container: WebContainer) {
     } catch (dirError) {
       // If readdir fails, try reading as file
       try {
-        const content: string | Uint8Array = await fs.readFile(filepath);
-        const size =
-          typeof content === "string" ? content.length : content.byteLength;
+        const content = await fs.readFile(filepath);
+        const size = typeof content === "string" 
+          ? (content as string).length 
+          : (content as Uint8Array).byteLength;
         const result = {
           type: "file" as const,
           mode: 0o666,

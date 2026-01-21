@@ -30,6 +30,43 @@ export class ProcessService {
    * @param onError Callback for stderr
    * @returns Process result
    */
+  /**
+   * Run a command without streaming (simpler version)
+   */
+  async runCommand(
+    command: string,
+    args: string[],
+    cwd: string,
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    const process = await this.container.spawn(command, args, {
+      cwd,
+      env: this.getAwsEnvVars(),
+    });
+
+    let output = "";
+    const decoder = new TextDecoder();
+    const reader = process.output.getReader();
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = typeof value === "string" ? value : decoder.decode(value, { stream: true });
+        output += text;
+      }
+    } catch (error) {
+      console.error("Error reading process output:", error);
+    }
+
+    const exitCode = await process.exit;
+
+    return {
+      exitCode,
+      stdout: output,
+      stderr: exitCode !== 0 ? output : "",
+    };
+  }
+
   async runCommandWithStreaming(
     command: string,
     args: string[],

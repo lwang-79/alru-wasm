@@ -46,6 +46,7 @@ export interface AppState {
     regions: string[];
     selectedRegion: string | null;
   };
+  repositoryProvider: "GitHub" | "CodeCommit";
 
   // Runtime Information
   runtimeInfo: {
@@ -77,6 +78,15 @@ export interface AppState {
     envVarChanges: EnvVarChange[];
     buildConfigChange: BuildConfigChange | null;
     originalBuildSpec: string | null;
+    buildConfigMessage: string | null;
+    buildConfigError: string | null;
+    upgradeMessage: string | null;
+    upgradeError: string | null;
+    upgradeChanges: FileChange[];
+    gen2EnvVarMessage: string | null;
+    gen2EnvVarError: string | null;
+    cloneError: string | null;
+    updateError: string | null;
     // Operation completion status for state persistence
     operationStatus: {
       cloneComplete: boolean;
@@ -93,12 +103,16 @@ export interface AppState {
   // Push Step State (preserved during navigation, reset on data changes)
   pushStep: {
     status: "pending" | "confirming" | "running" | "success" | "failed";
+    deploymentMode: "current" | "test";
     error: string | null;
     commitHash: string | null;
+    targetBranch: string | null;
     amplifyJob: any | null; // AmplifyJobDetails type
     jobCheckError: string | null;
     lastFailedJob: any | null; // AmplifyJobDetails type
     retryingJob: boolean;
+    innerStep: number;
+    postTestSelection: "push" | "manual" | null;
     // Track what this state is based on to detect when it should be reset
     basedOnAppId: string | null;
     basedOnBranchName: string | null;
@@ -133,6 +147,7 @@ const initialState: AppState = {
     regions: [],
     selectedRegion: null,
   },
+  repositoryProvider: "GitHub",
 
   runtimeInfo: {
     supportedVersions: [],
@@ -161,6 +176,15 @@ const initialState: AppState = {
     envVarChanges: [],
     buildConfigChange: null,
     originalBuildSpec: null,
+    buildConfigMessage: null,
+    buildConfigError: null,
+    upgradeMessage: null,
+    upgradeError: null,
+    upgradeChanges: [],
+    gen2EnvVarMessage: null,
+    gen2EnvVarError: null,
+    cloneError: null,
+    updateError: null,
     operationStatus: {
       cloneComplete: false,
       prepareComplete: false,
@@ -175,12 +199,16 @@ const initialState: AppState = {
 
   pushStep: {
     status: "pending",
+    deploymentMode: "current",
     error: null,
     commitHash: null,
+    targetBranch: null,
     amplifyJob: null,
     jobCheckError: null,
     lastFailedJob: null,
     retryingJob: false,
+    innerStep: 0,
+    postTestSelection: null,
     basedOnAppId: null,
     basedOnBranchName: null,
     basedOnClonePath: null,
@@ -191,7 +219,7 @@ const initialState: AppState = {
     steps: [
       {
         id: "credentials",
-        title: "AWS Credentials",
+        title: "Credentials Setup",
         isComplete: false,
         isEnabled: true,
       },
@@ -209,7 +237,7 @@ const initialState: AppState = {
       },
       {
         id: "push",
-        title: "Push Changes",
+        title: "Deployment",
         isComplete: false,
         isEnabled: false,
       },
@@ -252,6 +280,15 @@ export function clearDownstreamState(fromStepIndex: number) {
       isOperationRunning: false,
       envVarChanges: [],
       buildConfigChange: null,
+      buildConfigMessage: null,
+      buildConfigError: null,
+      upgradeMessage: null,
+      upgradeError: null,
+      upgradeChanges: [],
+      gen2EnvVarMessage: null,
+      gen2EnvVarError: null,
+      cloneError: null,
+      updateError: null,
       originalBuildSpec: null,
       operationStatus: {
         cloneComplete: false,
@@ -285,12 +322,16 @@ export function clearDownstreamState(fromStepIndex: number) {
 export function resetPushStepState() {
   setAppState("pushStep", {
     status: "pending",
+    deploymentMode: "current",
     error: null,
     commitHash: null,
+    targetBranch: null,
     amplifyJob: null,
     jobCheckError: null,
     lastFailedJob: null,
     retryingJob: false,
+    innerStep: 0,
+    postTestSelection: null,
     basedOnAppId: null,
     basedOnBranchName: null,
     basedOnClonePath: null,

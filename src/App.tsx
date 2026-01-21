@@ -1,4 +1,4 @@
-import { Show, For, createSignal } from "solid-js";
+import { Show, For } from "solid-js";
 import {
   appState,
   setAppState,
@@ -9,8 +9,6 @@ import { CredentialStep } from "./components/CredentialStep";
 import { AppSelectionStep } from "./components/AppSelectionStep";
 import { CloneUpdateStep } from "./components/CloneUpdateStep";
 import { PushStep } from "./components/PushStep";
-import { CleanupDialog } from "./components/CleanupDialog";
-import "./App.css";
 
 function App() {
   const currentStep = () => appState.wizard.currentStep;
@@ -18,17 +16,11 @@ function App() {
 
   // Function to scroll the step content to top
   const scrollToTop = () => {
-    const scrollableWrapper = document.querySelector(".scrollable-wrapper");
+    const scrollableWrapper = document.querySelector(".flex-1.overflow-y-auto");
     if (scrollableWrapper) {
       scrollableWrapper.scrollTop = 0;
     }
   };
-
-  // Cleanup dialog state
-  const [showCleanupDialog, setShowCleanupDialog] = createSignal(false);
-  const [pendingNavigation, setPendingNavigation] = createSignal<{
-    callback: (() => void) | null;
-  }>({ callback: null });
 
   const handleStepComplete = (stepIndex: number) => {
     // Mark current step as complete
@@ -36,8 +28,6 @@ function App() {
 
     // Enable next step if exists
     if (stepIndex + 1 < steps().length) {
-      // Always enable the next step when completing a step
-      // (The cleanup process will disable steps 2 and 3, but completing step 1 should re-enable step 2)
       setAppState("wizard", "steps", stepIndex + 1, "isEnabled", true);
       setAppState("wizard", "currentStep", stepIndex + 1);
 
@@ -51,34 +41,6 @@ function App() {
     }
   };
 
-  // Handle cleanup confirmation
-  const handleCleanupClose = () => {
-    // CleanupDialog component already handles all state cleanup
-    // We just need to handle the navigation callback here
-    setShowCleanupDialog(false);
-    const nav = pendingNavigation();
-    if (nav.callback) {
-      nav.callback();
-    }
-    setPendingNavigation({ callback: null });
-  };
-
-  // Check if navigation requires cleanup dialog (only when repo exists)
-  const navigateWithCleanupCheck = (
-    targetStep: number,
-    callback: () => void,
-  ) => {
-    // If navigating to an earlier step (before Clone & Update) and repository exists, ask for cleanup
-    // Step 2 is Clone & Update (after removing Prerequisites step)
-    if (targetStep < 2 && appState.repository.clonePath) {
-      setShowCleanupDialog(true);
-      setPendingNavigation({ callback });
-    } else {
-      // No cleanup needed, just navigate (don't clear state when just viewing)
-      callback();
-    }
-  };
-
   const goToPreviousStep = () => {
     const current = currentStep();
     if (current > 0) {
@@ -88,13 +50,8 @@ function App() {
         return;
       }
 
-      const targetStep = current - 1;
-      // Always check for cleanup when navigating to earlier steps
-      navigateWithCleanupCheck(targetStep, () => {
-        setAppState("wizard", "currentStep", targetStep);
-        // Scroll to top when navigating to previous step
-        setTimeout(scrollToTop, 0);
-      });
+      setAppState("wizard", "currentStep", current - 1);
+      setTimeout(scrollToTop, 0);
     }
   };
 
@@ -140,14 +97,14 @@ function App() {
       return; // Can't go to Push step without a repository
     }
 
-    // If navigating backwards, check for cleanup
-    if (stepIndex < currentStep()) {
-      console.log(`[goToStep] Navigating backwards, checking for cleanup`);
-      navigateWithCleanupCheck(stepIndex, () => {
-        setAppState("wizard", "currentStep", stepIndex);
-        // Scroll to top when navigating backwards
-        setTimeout(scrollToTop, 0);
-      });
+    // Block navigation if step is disabled or operation is running
+    if (!step.isEnabled || appState.repository.isOperationRunning) {
+      console.log(`[goToStep] Step ${stepIndex} blocked - disabled or operation running`);
+      return;
+    }
+
+    if (stepIndex === currentStep()) {
+      console.log(`[goToStep] Already on step ${stepIndex}, ignoring`);
       return;
     }
 
@@ -165,16 +122,18 @@ function App() {
   };
 
   return (
-    <main class="app-container">
-      <header class="app-header">
-        <h1>Amplify Lambda Runtime Updater</h1>
-        <p class="app-subtitle">
+    <main class="flex flex-col h-screen w-full mx-auto p-0 overflow-hidden">
+      <header class="text-center p-4 bg-[#f6f6f6] dark:bg-[#1a1a1a] flex-shrink-0 [WebkitAppRegion:drag] max-w-[900px] mx-auto w-full">
+        <h1 class="m-0 mb-2 text-[1.8rem] text-[#1a1a1a] dark:text-[#f6f6f6] font-bold [WebkitAppRegion:no-drag]">
+          Amplify Lambda Runtime Updater
+        </h1>
+        <p class="text-[#666] dark:text-[#999] m-0 [WebkitAppRegion:no-drag]">
           Update Lambda Node.js runtimes in your Amplify projects
         </p>
       </header>
 
       {/* Step Indicator */}
-      <nav class="step-indicator">
+      <nav class="flex justify-center gap-2 pb-4 flex-wrap bg-[#f6f6f6] dark:bg-[#1a1a1a] flex-shrink-0 [WebkitAppRegion:no-drag] max-w-[900px] mx-auto w-full">
         <For each={steps()}>
           {(step, index) => {
             const stepIndex = index();
@@ -182,9 +141,16 @@ function App() {
               !steps()[stepIndex].isEnabled ||
               appState.repository.isOperationRunning;
 
+            const isActive = () => currentStep() === stepIndex;
+            const isComplete = () => step.isComplete;
+
             return (
               <button
-                class={`step-item ${currentStep() === stepIndex ? "active" : ""} ${step.isComplete ? "complete" : ""} ${isDisabled() ? "disabled" : ""}`}
+                class={`flex items-center gap-2 px-4 py-2 border rounded-lg cursor-pointer transition-all duration-200 
+                  ${isActive() ? "border-[#396cd8] dark:border-[#5b8def] bg-[#f0f5ff] dark:bg-[#2a3a5a]" : "border-[#ddd] dark:border-[#444] bg-white dark:bg-[#2a2a2a]"} 
+                  ${isComplete() ? "border-[#22c55e]" : ""} 
+                  ${isDisabled() ? "opacity-50 dark:opacity-40 cursor-not-allowed pointer-events-none bg-[#f5f5f5] dark:bg-[#1a1a1a]" : "hover:border-[#396cd8] dark:hover:border-[#5b8def]"}
+                `}
                 onClick={(e) => {
                   console.log(
                     `[Button Click] Step ${stepIndex} clicked`,
@@ -205,10 +171,15 @@ function App() {
                 disabled={isDisabled()}
                 aria-disabled={isDisabled()}
               >
-                <span class="step-number">
+                <span
+                  class={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold
+                    ${isActive() ? "bg-[#396cd8] dark:bg-[#5b8def] text-white" : "bg-[#e5e5e5] dark:bg-[#444] dark:text-[#f6f6f6]"}
+                    ${isComplete() ? "bg-[#22c55e] text-white" : ""}
+                  `}
+                >
                   {step.isComplete ? "✓" : stepIndex + 1}
                 </span>
-                <span class="step-title">{step.title}</span>
+                <span class="text-sm font-medium">{step.title}</span>
               </button>
             );
           }}
@@ -216,8 +187,8 @@ function App() {
       </nav>
 
       {/* Step Content Wrapper - Scrollable area */}
-      <div class="scrollable-wrapper">
-        <div class="step-content">
+      <div class="flex-1 overflow-y-auto overflow-x-hidden w-full bg-[#f6f6f6] dark:bg-[#1a1a1a]">
+        <div class="max-w-[900px] mx-auto mb-8 p-8 min-h-[calc(100vh-200px)] bg-white dark:bg-[#2a2a2a]">
           <Show when={currentStep() === 0}>
             <CredentialStep onComplete={() => handleStepComplete(0)} />
           </Show>
@@ -244,9 +215,6 @@ function App() {
           </Show>
         </div>
       </div>
-
-      {/* Cleanup Confirmation Dialog */}
-      <CleanupDialog show={showCleanupDialog()} onClose={handleCleanupClose} />
     </main>
   );
 }

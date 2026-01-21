@@ -94,7 +94,7 @@ export class GitService {
       // Clean up on failure
       try {
         await this.container.fs.rm(repoPath, { recursive: true });
-      } catch {}
+      } catch { }
 
       // Re-throw with more context
       throw error;
@@ -231,8 +231,9 @@ export class GitService {
     repoPath: string,
     credentials: GitCredentials,
     onProgress?: (message: string) => void,
+    ref?: string,
   ): Promise<void> {
-    onProgress?.("Pushing changes...");
+    onProgress?.(`Pushing changes${ref ? ` for branch ${ref}` : ""}...`);
 
     // Validate credentials before using them
     if (!credentials || !credentials.username || !credentials.password) {
@@ -247,6 +248,8 @@ export class GitService {
         http,
         dir: repoPath,
         remote: "origin",
+        ref: ref, // Push the specific ref (branch)
+        remoteRef: ref, // To a remote ref of the same name
         onAuth: () => ({
           username: credentials.username,
           password: credentials.password,
@@ -273,6 +276,7 @@ export class GitService {
    * @param commitMessage Commit message
    * @param credentials Git credentials
    * @param onProgress Progress callback
+   * @param branchName Optional branch name to push
    * @returns Commit SHA
    */
   async commitAndPush(
@@ -280,9 +284,11 @@ export class GitService {
     commitMessage: string,
     credentials: GitCredentials,
     onProgress?: (message: string) => void,
+    branchName?: string,
   ): Promise<string> {
     console.log("[GitService.commitAndPush] Starting...");
     console.log("[GitService.commitAndPush] repoPath:", repoPath);
+    console.log("[GitService.commitAndPush] branchName:", branchName);
     console.log("[GitService.commitAndPush] credentials:", {
       username: credentials.username,
       passwordLength: credentials.password?.length,
@@ -321,7 +327,7 @@ export class GitService {
     // Push
     try {
       console.log("[GitService.commitAndPush] Step 3: Pushing...");
-      await this.push(repoPath, credentials, onProgress);
+      await this.push(repoPath, credentials, onProgress, branchName);
       console.log("[GitService.commitAndPush] Step 3: Push complete");
     } catch (pushError) {
       console.error("[GitService.commitAndPush] ERROR in push:", pushError);
@@ -450,6 +456,123 @@ export class GitService {
       await this.container.fs.rm(repoPath, { recursive: true });
     } catch (error) {
       console.warn(`Failed to clean up ${repoPath}:`, error);
+    }
+  }
+
+  /**
+   * Create a new local branch
+   *
+   * @param repoPath Repository path
+   * @param branchName Branch name
+   */
+  async createBranch(repoPath: string, branchName: string): Promise<void> {
+    await git.branch({
+      fs: this.fs,
+      dir: repoPath,
+      ref: branchName,
+      checkout: false,
+    });
+  }
+
+  /**
+   * Checkout a branch
+   *
+   * @param repoPath Repository path
+   * @param branchName Branch name
+   */
+  async checkout(repoPath: string, branchName: string): Promise<void> {
+    await git.checkout({
+      fs: this.fs,
+      dir: repoPath,
+      ref: branchName,
+    });
+  }
+
+  /**
+   * Merge a branch into the current branch
+   *
+   * @param repoPath Repository path
+   * @param branchName Branch name to merge from
+   */
+  async merge(repoPath: string, branchName: string): Promise<void> {
+    try {
+      await git.merge({
+        fs: this.fs,
+        dir: repoPath,
+        ours: await this.getCurrentBranch(repoPath),
+        theirs: branchName,
+        author: {
+          name: await this.getGitConfigValue(repoPath, "user.name"),
+          email: await this.getGitConfigValue(repoPath, "user.email"),
+        },
+      });
+      console.log(`[GitService] Merged branch: ${branchName}`);
+    } catch (error) {
+      console.error(`[GitService] Error merging branch ${branchName}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a local branch
+   *
+   * @param repoPath Repository path
+   * @param branchName Branch name to delete
+   */
+  async deleteBranch(repoPath: string, branchName: string): Promise<void> {
+    try {
+      await git.deleteBranch({
+        fs: this.fs,
+        dir: repoPath,
+        ref: branchName,
+      });
+      console.log(`[GitService] Deleted branch: ${branchName}`);
+    } catch (error) {
+      console.error(`[GitService] Error deleting branch ${branchName}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a remote branch
+   *
+   * @param repoPath Repository path
+   * @param credentials Git credentials
+   * @param branchName Branch name to delete
+   */
+  async deleteRemoteBranch(
+    repoPath: string,
+    credentials: GitCredentials,
+    branchName: string,
+    onProgress?: (message: string) => void,
+  ): Promise<void> {
+    onProgress?.(`Deleting remote branch ${branchName}...`);
+
+    try {
+      await git.push({
+        fs: this.fs,
+        http,
+        dir: repoPath,
+        remote: "origin",
+        ref: branchName,
+        remoteRef: branchName,
+        delete: true,
+        onAuth: () => ({
+          username: credentials.username,
+          password: credentials.password,
+        }),
+        onProgress: (progress: any) => {
+          onProgress?.(`Deleting: ${progress.phase}`);
+        },
+        corsProxy: "https://cors.isomorphic-git.org",
+      } as any);
+      console.log(`[GitService] Deleted remote branch: ${branchName}`);
+    } catch (error) {
+      console.error(
+        `[GitService] Error deleting remote branch ${branchName}:`,
+        error,
+      );
+      throw error;
     }
   }
 }

@@ -69,7 +69,8 @@ export class RuntimeService {
 
   /**
    * Get target runtime for updates
-   * Returns the latest supported LTS version
+   * Returns the second oldest supported LTS version (or oldest if only one exists)
+   * This matches the logic from alru Rust backend (runtime.rs:160-183)
    *
    * @returns Target runtime string (e.g., "nodejs20.x")
    */
@@ -80,10 +81,15 @@ export class RuntimeService {
       throw new Error('No supported Node.js runtimes found');
     }
 
-    // Use the latest supported version
-    const latestVersion = supported[0];
+    // Sort ascending (oldest first) - supported is already descending
+    const sortedAscending = [...supported].sort((a, b) => a - b);
 
-    return `nodejs${latestVersion}.x`;
+    // Get the second oldest, or the oldest if there's only one
+    const targetVersion = sortedAscending.length >= 2 
+      ? sortedAscending[1]  // Second oldest
+      : sortedAscending[0]; // Only one version available
+
+    return `nodejs${targetVersion}.x`;
   }
 
   /**

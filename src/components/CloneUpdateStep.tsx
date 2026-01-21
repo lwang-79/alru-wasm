@@ -1,10 +1,5 @@
-import { createSignal, Show, For, onMount, createEffect } from "solid-js";
-import type {
-  PackageManager,
-  BackendType,
-  BuildStatus,
-  FileChange,
-} from "../types";
+import { createSignal, Show, onMount, createEffect } from "solid-js";
+import type { PackageManager, BackendType, FileChange } from "../types";
 import { appState, setAppState } from "../store/appStore";
 import { WebContainerService } from "../services/container/webContainerService";
 import { FileService } from "../services/container/fileService";
@@ -12,18 +7,21 @@ import { DetectionService } from "../services/container/detectionService";
 import { ProcessService } from "../services/container/processService";
 import { GitService, type GitCredentials } from "../services/git/gitService";
 import { Gen2Updater } from "../services/runtime/gen2Updater";
+import { AmplifyGen1Service } from "../services/amplify/gen1Service";
 import { RuntimeService } from "../services/runtime/runtimeService";
 import { AmplifyService } from "../services/aws/amplifyService";
 import { CredentialService } from "../services/aws/credentialService";
-import "./shared.css";
-import "./CloneUpdateStep.css";
+import { OperationCard } from "./common/OperationCard";
+import type { OperationStatus } from "./common/OperationCard";
+import { StatusMessage } from "./common/StatusMessage";
+import { OperationFeedback } from "./common/OperationFeedback";
+import { WizardStep } from "./common/WizardStep";
+import "./shared-tailwind.css";
 
 interface CloneUpdateStepProps {
   onComplete?: () => void;
   onBack?: () => void;
 }
-
-type OperationStatus = "pending" | "running" | "success" | "failed";
 
 // Services singleton instances
 let fileService: FileService | null = null;
@@ -31,6 +29,7 @@ let detectionService: DetectionService | null = null;
 let processService: ProcessService | null = null;
 let gitService: GitService | null = null;
 let gen2Updater: Gen2Updater | null = null;
+let gen1Service: AmplifyGen1Service | null = null;
 let runtimeService: RuntimeService | null = null;
 let amplifyService: AmplifyService | null = null;
 let credentialService: CredentialService | null = null;
@@ -46,6 +45,7 @@ async function initializeServices() {
     processService = new ProcessService(container);
     gitService = new GitService(container);
     gen2Updater = new Gen2Updater(fileService);
+    gen1Service = new AmplifyGen1Service(fileService);
     runtimeService = new RuntimeService();
     credentialService = new CredentialService();
 
@@ -59,6 +59,7 @@ async function initializeServices() {
     processService: processService!,
     gitService: gitService!,
     gen2Updater: gen2Updater!,
+    gen1Service: gen1Service!,
     runtimeService: runtimeService!,
     amplifyService: amplifyService!,
     credentialService: credentialService!,
@@ -73,12 +74,6 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
     createSignal<OperationStatus>("pending");
   const [updateStatus, setUpdateStatus] =
     createSignal<OperationStatus>("pending");
-
-  // Build verification status - use store state for persistence
-  const buildStatus = () => appState.repository.gen2BuildVerificationStatus;
-  const setBuildStatus = (status: BuildStatus) =>
-    setAppState("repository", "gen2BuildVerificationStatus", status);
-
   const [envVarStatus, setEnvVarStatus] =
     createSignal<OperationStatus>("pending");
   const [buildConfigStatus, setBuildConfigStatus] =
@@ -87,45 +82,7 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
     createSignal<OperationStatus>("pending");
 
   // Error messages
-  const [cloneError, setCloneError] = createSignal<string | null>(null);
-  const [prepareError, setPrepareError] = createSignal<string | null>(null);
-  const [prepareOutput, setPrepareOutput] = createSignal<string>("");
-  const [updateError, setUpdateError] = createSignal<string | null>(null);
-  const [upgradeMessage, setUpgradeMessage] = createSignal<string | null>(null);
-  const [buildError, setBuildError] = createSignal<string | null>(null);
-  const [envVarError, setEnvVarError] = createSignal<string | null>(null);
-  const [envVarMessage, setEnvVarMessage] = createSignal<string | null>(null);
-  const [buildConfigError, setBuildConfigError] = createSignal<string | null>(
-    null,
-  );
-  const [buildConfigMessage, setBuildConfigMessage] = createSignal<
-    string | null
-  >(null);
-  const [gen2EnvVarError, setGen2EnvVarError] = createSignal<string | null>(
-    null,
-  );
-  const [gen2EnvVarMessage, setGen2EnvVarMessage] = createSignal<string | null>(
-    null,
-  );
 
-  // Build output
-  const [buildOutput, setBuildOutput] = createSignal<string>("");
-
-  // Copy path feedback
-  const [pathCopied, setPathCopied] = createSignal(false);
-
-  // Gen2 sandbox option - use store state for persistence
-  const gen2SandboxEnabled = () => appState.repository.gen2SandboxEnabled;
-  const setGen2SandboxEnabled = (enabled: boolean) =>
-    setAppState("repository", "gen2SandboxEnabled", enabled);
-
-  // Gen2 sandbox status - use store state for persistence
-  const sandboxStatus = () => appState.repository.gen2SandboxStatus;
-  const setSandboxStatus = (status: BuildStatus) =>
-    setAppState("repository", "gen2SandboxStatus", status);
-
-  const [sandboxError, setSandboxError] = createSignal<string | null>(null);
-  const [sandboxOutput, setSandboxOutput] = createSignal<string>("");
 
   // Git credentials - loaded from credential service
   const [gitCredentials, setGitCredentials] =
@@ -139,8 +96,6 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
       updateStatus() === "running" ||
       buildConfigStatus() === "running" ||
       gen2EnvVarStatus() === "running" ||
-      sandboxStatus() === "running" ||
-      buildStatus() === "running" ||
       envVarStatus() === "running"
     );
   };
@@ -175,9 +130,6 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
     if (opStatus.buildConfigComplete) {
       setBuildConfigStatus("success");
     }
-    if (opStatus.buildComplete) {
-      setBuildStatus("success");
-    }
     if (opStatus.envVarComplete) {
       setEnvVarStatus("success");
     }
@@ -192,39 +144,6 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
         element.getBoundingClientRect();
       }
     }, 10);
-  });
-
-  // Auto-scroll prepare output
-  createEffect(() => {
-    const output = prepareOutput();
-    if (output) {
-      const pre = document.getElementById("prepare-output-pre");
-      if (pre) {
-        pre.scrollTop = pre.scrollHeight;
-      }
-    }
-  });
-
-  // Auto-scroll sandbox output
-  createEffect(() => {
-    const output = sandboxOutput();
-    if (output) {
-      const pre = document.getElementById("sandbox-output-pre");
-      if (pre) {
-        pre.scrollTop = pre.scrollHeight;
-      }
-    }
-  });
-
-  // Auto-scroll build output
-  createEffect(() => {
-    const output = buildOutput();
-    if (output) {
-      const pre = document.getElementById("build-output-pre");
-      if (pre) {
-        pre.scrollTop = pre.scrollHeight;
-      }
-    }
   });
 
   // Check if error is a permission/authentication issue
@@ -247,6 +166,20 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
       "publickey",
     ];
     return permissionPatterns.some((pattern) => error.includes(pattern));
+  };
+
+  /**
+   * Fetch the latest version of a package from the npm registry
+   */
+  const fetchLatestVersion = async (packageName: string): Promise<string> => {
+    try {
+      const response = await fetch(`https://registry.npmjs.org/${packageName}/latest`);
+      const data = await response.json();
+      return data.version;
+    } catch (error) {
+      console.warn(`Failed to fetch latest version for ${packageName}:`, error);
+      return 'latest';
+    }
   };
 
   // Format clone error with helpful guidance
@@ -289,8 +222,8 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
     return new Promise((resolve, reject) => {
       const username = prompt(
         "GitHub Authentication Required\n\n" +
-          "No credentials found. Please configure credentials in Step 1.\n\n" +
-          "Enter your GitHub username:",
+        "No credentials found. Please configure credentials in Step 1.\n\n" +
+        "Enter your GitHub username:",
       );
       if (!username) {
         reject(
@@ -303,10 +236,10 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
 
       const password = prompt(
         "GitHub Authentication Required\n\n" +
-          "No credentials found. Please configure credentials in Step 1.\n\n" +
-          "Enter your Personal Access Token (PAT):\n\n" +
-          "Create one at: https://github.com/settings/tokens\n" +
-          "Required scope: 'repo' (for private repos) or 'public_repo' (for public repos)",
+        "No credentials found. Please configure credentials in Step 1.\n\n" +
+        "Enter your Personal Access Token (PAT):\n\n" +
+        "Create one at: https://github.com/settings/tokens\n" +
+        "Required scope: 'repo' (for private repos) or 'public_repo' (for public repos)",
       );
       if (!password) {
         reject(
@@ -327,12 +260,12 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
     const selectedBranch = appState.amplifyResources.selectedBranch;
 
     if (!selectedApp || !selectedBranch) {
-      setCloneError("No app or branch selected");
+      setAppState("repository", "cloneError", "No app or branch selected");
       return;
     }
 
     setCloneStatus("running");
-    setCloneError(null);
+    setAppState("repository", "cloneError", null);
     setAppState("repository", "operationStatus", "cloneComplete", false);
 
     try {
@@ -346,7 +279,7 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
           creds = await getGitCredentials();
           setGitCredentials(creds);
         } catch (e) {
-          setCloneError(String(e));
+          setAppState("repository", "cloneError", String(e));
           setCloneStatus("failed");
           return;
         }
@@ -382,7 +315,9 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
         setCloneStatus("success");
         setAppState("repository", "operationStatus", "cloneComplete", true);
       } catch (e) {
-        setCloneError(
+        setAppState(
+          "repository",
+          "cloneError",
           `Clone succeeded but configuration detection failed: ${String(e)}`,
         );
         setCloneStatus("failed");
@@ -392,7 +327,7 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
         String(e),
         selectedApp.repository,
       );
-      setCloneError(formattedError);
+      setAppState("repository", "cloneError", formattedError);
       setCloneStatus("failed");
     }
   };
@@ -401,127 +336,98 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
   const handlePrepare = async () => {
     const clonePath = appState.repository.clonePath;
     const packageManager = appState.repository.packageManager;
-    const backendType = appState.repository.backendType;
-
-    console.log("[Prepare] Starting with clonePath:", clonePath);
-    console.log("[Prepare] Package manager:", packageManager);
-    console.log("[Prepare] Backend type:", backendType);
 
     if (!clonePath || !packageManager) {
-      setPrepareError("Missing required information for preparation");
+      setAppState(
+        "repository",
+        "upgradeError",
+        "Missing required information for preparation",
+      );
       return;
     }
 
     setPrepareStatus("running");
-    setPrepareError(null);
-    setPrepareOutput("");
+    setAppState("repository", "upgradeError", null);
+    setAppState("repository", "upgradeMessage", null);
     setAppState("repository", "operationStatus", "prepareComplete", false);
     setAppState("repository", "operationStatus", "upgradeComplete", false);
 
     try {
       const services = await initializeServices();
+      const container = await WebContainerService.getInstance();
 
-      const onOutput = (line: string) => {
-        setPrepareOutput((prev) => prev + line);
-      };
+      const packagesToUpgrade = [
+        "@aws-amplify/backend",
+        "@aws-amplify/backend-cli",
+      ];
+      const foundChanges: FileChange[] = [];
 
-      if (backendType === "Gen1") {
-        // Gen1: Not fully supported yet, but install dependencies
-        onOutput("Installing dependencies...\n");
-        await services.processService.installDependencies(
-          packageManager,
-          clonePath,
-          onOutput,
-        );
+      // Step 1: Read current package.json
+      const packageJsonPath = `${clonePath}/package.json`;
+      const packageJsonContent = await container.fs.readFile(
+        packageJsonPath,
+        "utf-8"
+      );
+      const pkg = JSON.parse(packageJsonContent);
 
-        // TODO: Gen1 Amplify setup (amplify pull, env checkout) - defer to later
-        setPrepareError(
-          "Gen1 support is not fully implemented yet. Dependencies installed, but Amplify environment setup is pending.",
-        );
-        setPrepareStatus("success");
-      } else {
-        // Gen2: Install/upgrade Amplify packages to latest versions
-        onOutput(
-          "Installing/upgrading @aws-amplify/backend packages to latest...\n",
-        );
+      // Step 2: Fetch latest versions and compare
+      for (const pkgName of packagesToUpgrade) {
+        // Get current version from package.json (prefer devDependencies then dependencies)
+        const currentVersion =
+          pkg.devDependencies?.[pkgName] || pkg.dependencies?.[pkgName];
 
-        // Determine the correct install command based on package manager
-        let installCmd: string;
-        let installArgs: string[];
+        if (!currentVersion) continue;
 
-        if (packageManager === "npm") {
-          installCmd = "npm";
-          installArgs = [
-            "install",
-            "@aws-amplify/backend@latest",
-            "@aws-amplify/backend-cli@latest",
-            "--save-dev",
-          ];
-        } else if (packageManager === "yarn") {
-          installCmd = "yarn";
-          installArgs = [
-            "add",
-            "@aws-amplify/backend@latest",
-            "@aws-amplify/backend-cli@latest",
-            "--dev",
-          ];
-        } else if (packageManager === "pnpm") {
-          installCmd = "pnpm";
-          installArgs = [
-            "add",
-            "@aws-amplify/backend@latest",
-            "@aws-amplify/backend-cli@latest",
-            "-D",
-          ];
-        } else if (packageManager === "bun") {
-          installCmd = "bun";
-          installArgs = [
-            "add",
-            "@aws-amplify/backend@latest",
-            "@aws-amplify/backend-cli@latest",
-            "--dev",
-          ];
-        } else {
-          // Default to npm
-          installCmd = "npm";
-          installArgs = [
-            "install",
-            "@aws-amplify/backend@latest",
-            "@aws-amplify/backend-cli@latest",
-            "--save-dev",
-          ];
+        // Fetch latest version from npm registry directly
+        const latestVersion = await fetchLatestVersion(pkgName);
+
+        if (latestVersion !== 'latest') {
+          // Clean up current version (remove ^, ~, etc. for exact comparison if needed, but usually we just want latest)
+          // For simplicity, we compare latest with the string in package.json
+          if (currentVersion !== latestVersion && !currentVersion.includes(latestVersion)) {
+            foundChanges.push({
+              path: "package.json",
+              change_type: "Update",
+              old_value: `${pkgName}: ${currentVersion}`,
+              new_value: `${pkgName}: ${latestVersion}`,
+            });
+
+            // Update package.json object
+            if (pkg.devDependencies?.[pkgName]) {
+              pkg.devDependencies[pkgName] = latestVersion;
+            } else if (pkg.dependencies?.[pkgName]) {
+              pkg.dependencies[pkgName] = latestVersion;
+            }
+          }
         }
-
-        // Install/upgrade the Amplify packages
-        const amplifyResult =
-          await services.processService.runCommandWithStreaming(
-            installCmd,
-            installArgs,
-            clonePath,
-            onOutput,
-            onOutput,
-          );
-
-        if (amplifyResult.exitCode !== 0) {
-          throw new Error(
-            `Failed to install Amplify packages: exit code ${amplifyResult.exitCode}`,
-          );
-        }
-
-        setUpgradeMessage(
-          "Amplify backend packages installed/upgraded to latest",
-        );
-        onOutput("\n✓ Amplify packages installed to latest version\n\n");
-
-        // Install all other dependencies
-        onOutput("Installing remaining dependencies...\n");
-        await services.processService.installDependencies(
-          packageManager,
-          clonePath,
-          onOutput,
-        );
       }
 
+      // Step 3: If changes found, write back package.json and run install to sync lock file
+      if (foundChanges.length > 0) {
+        await container.fs.writeFile(
+          packageJsonPath,
+          JSON.stringify(pkg, null, 2)
+        );
+
+        // Run install to sync lock file
+        const installResult = await services.processService.runCommand(
+          packageManager,
+          ["install"],
+          clonePath
+        );
+
+        if (installResult.exitCode !== 0) {
+          throw new Error(
+            `Failed to install updated packages and sync lock file: ${installResult.stderr || installResult.stdout}`
+          );
+        }
+
+        setAppState("repository", "upgradeMessage", "Amplify backend packages upgraded to latest and lock file synced");
+      } else {
+        setAppState("repository", "upgradeMessage", "Amplify backend packages are already up to date");
+      }
+
+      setAppState("repository", "upgradeChanges", foundChanges);
       setPrepareStatus("success");
       setAppState("repository", "operationStatus", "prepareComplete", true);
       setAppState("repository", "operationStatus", "upgradeComplete", true);
@@ -529,7 +435,7 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
       console.error("[Prepare Error]", e);
       const errorMessage =
         e instanceof Error ? e.message : JSON.stringify(e, null, 2);
-      setPrepareError(errorMessage);
+      setAppState("repository", "upgradeError", errorMessage);
       setPrepareStatus("failed");
     }
   };
@@ -541,12 +447,12 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
     const targetRuntime = appState.runtimeInfo.targetRuntime;
 
     if (!clonePath || !backendType || !targetRuntime) {
-      setUpdateError("Missing required information for update");
+      setAppState("repository", "updateError", "Missing required information for update");
       return;
     }
 
     setUpdateStatus("running");
-    setUpdateError(null);
+    setAppState("repository", "updateError", null);
     setAppState("repository", "operationStatus", "updateComplete", false);
 
     try {
@@ -571,12 +477,25 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
         setUpdateStatus("success");
         setAppState("repository", "operationStatus", "updateComplete", true);
       } else {
-        // Gen1: Not fully supported yet
-        setUpdateError("Gen1 runtime updates not yet implemented");
-        setUpdateStatus("failed");
+        // Gen1: Update CloudFormation templates
+        const result = await services.gen1Service.updateGen1Backend(
+          clonePath,
+          targetRuntime,
+        );
+
+        const changes: FileChange[] = result.changes.map((c: any) => ({
+          path: c.path,
+          change_type: "runtime_update",
+          old_value: c.old_value,
+          new_value: c.new_value,
+        }));
+
+        setAppState("repository", "changes", changes);
+        setUpdateStatus("success");
+        setAppState("repository", "operationStatus", "updateComplete", true);
       }
     } catch (e) {
-      setUpdateError(String(e));
+      setAppState("repository", "updateError", String(e));
       setUpdateStatus("failed");
     }
   };
@@ -587,15 +506,17 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
     const selectedApp = appState.amplifyResources.selectedApp;
 
     if (!clonePath || !selectedApp) {
-      setBuildConfigError(
+      setAppState(
+        "repository",
+        "buildConfigError",
         "Missing required information for build config update",
       );
       return;
     }
 
     setBuildConfigStatus("running");
-    setBuildConfigError(null);
-    setBuildConfigMessage(null);
+    setAppState("repository", "buildConfigError", null);
+    setAppState("repository", "buildConfigMessage", null);
     setAppState("repository", "operationStatus", "buildConfigComplete", false);
 
     try {
@@ -608,55 +529,11 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
       try {
         amplifyYmlContent = await services.fileService.readFile(amplifyYmlPath);
       } catch {
-        // If amplify.yml doesn't exist, try to get from cloud
-        const app = await services.amplifyService!.getApp(selectedApp.app_id);
-
-        if (app.buildSpec) {
-          // Update cloud buildSpec
-          const oldCommand =
-            app.buildSpec.match(/- npx ampx generate outputs/)?.[0] || "";
-          const newCommand =
-            "- npx ampx pipeline-deploy --branch $AWS_BRANCH --app-id $AWS_APP_ID";
-
-          if (oldCommand && !app.buildSpec.includes("pipeline-deploy")) {
-            const newBuildSpec = app.buildSpec.replace(oldCommand, newCommand);
-
-            // Update in cloud
-            await services.amplifyService!.updateApp(selectedApp.app_id, {
-              buildSpec: newBuildSpec,
-            });
-
-            setAppState("repository", "buildConfigChange", {
-              location: "Cloud",
-              old_command: oldCommand,
-              new_command: newCommand,
-            });
-            setAppState("repository", "originalBuildSpec", app.buildSpec);
-
-            setBuildConfigMessage("Build configuration updated in AWS Cloud");
-            setBuildConfigStatus("success");
-            setAppState(
-              "repository",
-              "operationStatus",
-              "buildConfigComplete",
-              true,
-            );
-            return;
-          } else {
-            setBuildConfigMessage("Build configuration already up to date");
-            setBuildConfigStatus("success");
-            setAppState(
-              "repository",
-              "operationStatus",
-              "buildConfigComplete",
-              true,
-            );
-            return;
-          }
-        }
-
-        setBuildConfigError(
-          "Could not find amplify.yml in repository or cloud buildSpec",
+        // If amplify.yml doesn't exist in repository, skip cloud update (not implemented in WASM version)
+        setAppState(
+          "repository",
+          "buildConfigError",
+          "amplify.yml not found in repository. Cloud buildSpec updates are not supported in the web version.",
         );
         setBuildConfigStatus("failed");
         return;
@@ -675,13 +552,17 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
         await services.fileService.writeFile(amplifyYmlPath, updatedContent);
 
         setAppState("repository", "buildConfigChange", {
-          location: amplifyYmlPath,
+          location: "File" as const,
           old_command: "- npx ampx generate outputs",
           new_command:
             "- npx ampx pipeline-deploy --branch $AWS_BRANCH --app-id $AWS_APP_ID",
         });
 
-        setBuildConfigMessage("Build configuration updated in amplify.yml");
+        setAppState(
+          "repository",
+          "buildConfigMessage",
+          "Build configuration updated in amplify.yml",
+        );
         setBuildConfigStatus("success");
         setAppState(
           "repository",
@@ -690,7 +571,11 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
           true,
         );
       } else {
-        setBuildConfigMessage("Build configuration already up to date");
+        setAppState(
+          "repository",
+          "buildConfigMessage",
+          "Build configuration already up to date",
+        );
         setBuildConfigStatus("success");
         setAppState(
           "repository",
@@ -701,486 +586,45 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
       }
     } catch (e) {
       console.error("Build config update failed:", e);
-      setBuildConfigError(`Build configuration update failed: ${String(e)}`);
+      setAppState(
+        "repository",
+        "buildConfigError",
+        `Build configuration update failed: ${String(e)}`,
+      );
       setBuildConfigStatus("failed");
     }
   };
 
-  // Deploy Gen2 sandbox
-  const handleSandboxDeploy = async () => {
-    const clonePath = appState.repository.clonePath;
-
-    if (!clonePath) {
-      setSandboxError("Missing required information for sandbox deployment");
-      return;
-    }
-
-    setSandboxStatus("running");
-    setSandboxError(null);
-    setSandboxOutput("");
-
-    try {
-      const services = await initializeServices();
-
-      const onOutput = (line: string) => {
-        console.log("[Sandbox Output]", line);
-        setSandboxOutput((prev) => prev + line);
-      };
-
-      const onError = (line: string) => {
-        console.error("[Sandbox Error]", line);
-        setSandboxOutput((prev) => prev + `[ERROR] ${line}`);
-      };
-
-      // Check Node version in WebContainer
-      onOutput("=== WebContainer Environment ===\n");
-      await services.processService.runCommandWithStreaming(
-        "node",
-        ["--version"],
-        clonePath,
-        (line) => onOutput(`Node version: ${line}`),
-        onError,
-      );
-      await services.processService.runCommandWithStreaming(
-        "npm",
-        ["--version"],
-        clonePath,
-        (line) => onOutput(`npm version: ${line}`),
-        onError,
-      );
-
-      // Get absolute path
-      onOutput("\nAbsolute paths:\n");
-      await services.processService.runCommandWithStreaming(
-        "pwd",
-        [],
-        clonePath,
-        (line) => onOutput(`  Working directory (pwd): ${line}`),
-        onError,
-      );
-
-      // Get realpath if available
-      try {
-        await services.processService.runCommandWithStreaming(
-          "realpath",
-          ["."],
-          clonePath,
-          (line) => onOutput(`  Real path (realpath): ${line}`),
-          onError,
-        );
-      } catch (e) {
-        onOutput(`  realpath not available\n`);
-      }
-
-      onOutput("\n");
-
-      // Debug: Check repository state
-      onOutput("=== Verifying repository setup ===\n");
-      onOutput(`Repository path: ${clonePath}\n\n`);
-
-      // Check if directory exists and list contents
-      onOutput("Checking repository contents...\n");
-      const lsResult = await services.processService.runCommandWithStreaming(
-        "ls",
-        ["-la"],
-        clonePath,
-        onOutput,
-        onError,
-      );
-      onOutput("\n");
-
-      // Check if node_modules exists
-      onOutput("Checking node_modules...\n");
-      const nodeModulesResult =
-        await services.processService.runCommandWithStreaming(
-          "ls",
-          ["-ld", "node_modules"],
-          clonePath,
-          onOutput,
-          onError,
-        );
-      onOutput("\n");
-
-      // Check package.json
-      onOutput("Checking package.json...\n");
-      const pkgResult = await services.processService.runCommandWithStreaming(
-        "cat",
-        ["package.json"],
-        clonePath,
-        (line) => {
-          // Only show first 20 lines of package.json
-          const lines = line.split("\n");
-          onOutput(lines.slice(0, 20).join("\n") + "\n...\n");
-        },
-        onError,
-      );
-      onOutput("\n");
-
-      // Check for ampx in node_modules
-      onOutput("Checking for @aws-amplify/backend-cli...\n");
-      const ampxCheckResult =
-        await services.processService.runCommandWithStreaming(
-          "ls",
-          ["-la", "node_modules/.bin/"],
-          clonePath,
-          onOutput,
-          onError,
-        );
-      onOutput("\n");
-
-      // Check npm/npx version
-      onOutput("Checking npm/npx versions...\n");
-      await services.processService.runCommandWithStreaming(
-        "npm",
-        ["--version"],
-        clonePath,
-        (line) => onOutput(`npm version: ${line}`),
-        onError,
-      );
-      await services.processService.runCommandWithStreaming(
-        "npx",
-        ["--version"],
-        clonePath,
-        (line) => onOutput(`npx version: ${line}`),
-        onError,
-      );
-      onOutput("\n");
-
-      // Clear npx cache to ensure we get fresh packages
-      onOutput("Clearing npx cache...\n");
-      try {
-        await services.processService.runCommandWithStreaming(
-          "npx",
-          ["clear-npx-cache"],
-          clonePath,
-          (line) => onOutput(`  ${line}`),
-          (err) => onOutput(`  ${err}`),
-        );
-        onOutput("  ✓ npx cache cleared\n");
-      } catch (e) {
-        onOutput(`  Note: Could not clear npx cache: ${e}\n`);
-      }
-      onOutput("\n");
-
-      // Try to check if ampx is available and what version
-      onOutput("Checking ampx availability:\n");
-      try {
-        await services.processService.runCommandWithStreaming(
-          "npx",
-          ["ampx", "--version"],
-          clonePath,
-          (line) => onOutput(`  ampx version: ${line}`),
-          (err) => onOutput(`  Error: ${err}`),
-        );
-        onOutput("  ✓ ampx is accessible\n");
-      } catch (e) {
-        onOutput(`  ✗ ampx command not available: ${e}\n`);
-      }
-      onOutput("\n");
-
-      // Check for Lambda functions in amplify directory
-      onOutput("Checking amplify backend structure:\n");
-
-      // Check if amplify directory exists
-      try {
-        await services.processService.runCommandWithStreaming(
-          "ls",
-          ["-la", "amplify"],
-          clonePath,
-          (line) => onOutput(`  ${line}`),
-          onError,
-        );
-      } catch (e) {
-        onOutput(`  amplify directory: ${e}\n`);
-      }
-
-      // Check specifically for the say-hello function
-      onOutput("\nChecking say-hello function:\n");
-      try {
-        await services.processService.runCommandWithStreaming(
-          "ls",
-          ["-la", "amplify/functions/say-hello/"],
-          clonePath,
-          (line) => onOutput(`  ${line}`),
-          onError,
-        );
-      } catch (e) {
-        onOutput(`  say-hello function: ${e}\n`);
-      }
-
-      // Check if handler.ts exists
-      onOutput("\nChecking handler.ts:\n");
-      try {
-        await services.processService.runCommandWithStreaming(
-          "test",
-          ["-f", "amplify/functions/say-hello/handler.ts"],
-          clonePath,
-          () => onOutput(`  ✓ handler.ts exists\n`),
-          () => onOutput(`  ✗ handler.ts NOT FOUND\n`),
-        );
-
-        // Show the actual file content (first 20 lines)
-        await services.processService.runCommandWithStreaming(
-          "head",
-          ["-n", "20", "amplify/functions/say-hello/handler.ts"],
-          clonePath,
-          (line) => onOutput(`  ${line}`),
-          onError,
-        );
-      } catch (e) {
-        onOutput(`  Error checking handler.ts: ${e}\n`);
-      }
-
-      // Check with absolute path
-      onOutput("\nVerifying absolute path to handler.ts:\n");
-      await services.processService.runCommandWithStreaming(
-        "sh",
-        ["-c", "ls -la $(pwd)/amplify/functions/say-hello/handler.ts 2>&1"],
-        clonePath,
-        (line) => onOutput(`  ${line}`),
-        onError,
-      );
-
-      onOutput("\n");
-
-      onOutput("=== Starting sandbox deployment ===\n");
-      onOutput("Running: npx ampx sandbox\n");
-      onOutput(
-        "Note: This may take several minutes to deploy AWS resources...\n\n",
-      );
-
-      // Track output lines for completion detection
-      const outputLines: string[] = [];
-      let lastOutputTime = Date.now();
-      const startTime = Date.now();
-      const maxTimeout = 10 * 60 * 1000; // 10 minutes
-      const completionTimeout = 5 * 1000; // 5 seconds of no output after completion pattern
-
-      // Spawn the sandbox process (interactive, needs monitoring)
-      const container = await WebContainerService.getInstance();
-      const creds = services.credentialService.getCredentials();
-
-      // Use shell to cd into directory first, then run ampx
-      // This ensures the process working directory is set correctly for CDK
-      const process = await container.spawn(
-        "sh",
-        ["-c", `cd '${clonePath}' && npx ampx sandbox --debug`],
-        {
-          env: {
-            // Don't set NODE_ENV - let ampx use its default environment
-            AWS_ACCESS_KEY_ID: creds?.accessKeyId || "",
-            AWS_SECRET_ACCESS_KEY: creds?.secretAccessKey || "",
-            AWS_REGION: creds?.region || "",
-            AWS_DEFAULT_REGION: creds?.region || "",
-            AMPLIFY_CLI_DISABLE_PROMPTS: "true",
-            CI: "true",
-          },
-        },
-      );
-
-      // Monitor output for completion patterns
-      let deploymentComplete = false;
-      const decoder = new TextDecoder();
-      const reader = process.output.getReader();
-
-      const monitorOutput = async () => {
-        try {
-          while (!deploymentComplete) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            const text =
-              typeof value === "string"
-                ? value
-                : decoder.decode(value, { stream: true });
-
-            onOutput(text);
-            outputLines.push(text);
-            lastOutputTime = Date.now();
-
-            // Keep last 50 lines for pattern matching
-            if (outputLines.length > 50) {
-              outputLines.shift();
-            }
-
-            // Check for completion pattern
-            const recentOutput = outputLines.join("");
-            const hasWatching = recentOutput.includes(
-              "Watching for file changes",
-            );
-            const hasFileWritten = recentOutput.includes("File written:");
-
-            if (hasWatching && hasFileWritten) {
-              // Wait for additional output to stabilize
-              await new Promise((resolve) =>
-                setTimeout(resolve, completionTimeout),
-              );
-
-              const timeSinceOutput = Date.now() - lastOutputTime;
-              if (timeSinceOutput >= completionTimeout) {
-                deploymentComplete = true;
-                onOutput("\n✓ Sandbox deployment completed successfully!\n");
-                onOutput("Terminating sandbox watch process...\n");
-
-                // Kill the process
-                try {
-                  process.kill();
-                } catch (e) {
-                  console.log("[Sandbox] Process already terminated");
-                }
-                break;
-              }
-            }
-
-            // Check for max timeout
-            if (Date.now() - startTime >= maxTimeout) {
-              onOutput(
-                "\n⚠ Deployment is taking longer than expected (10 minutes).\n",
-              );
-              onOutput(
-                "Please monitor the AWS CloudFormation console for deployment status.\n",
-              );
-
-              try {
-                process.kill();
-              } catch (e) {
-                console.log("[Sandbox] Process already terminated");
-              }
-              throw new Error("Sandbox deployment timeout after 10 minutes");
-            }
-          }
-        } catch (error) {
-          console.error("[Sandbox] Error monitoring output:", error);
-          if (!deploymentComplete) {
-            throw error;
-          }
-        }
-      };
-
-      // Start monitoring
-      await monitorOutput();
-
-      // Wait for process to exit
-      const exitCode = await process.exit;
-
-      // If process was killed by us after successful deployment, that's okay
-      if (!deploymentComplete && exitCode !== 0) {
-        throw new Error(`Sandbox deployment failed with exit code ${exitCode}`);
-      }
-
-      setSandboxStatus("success");
-      setAppState("repository", "sandboxDeployed", true);
-    } catch (e) {
-      console.error("[Sandbox Deploy Error]", e);
-      setSandboxError(String(e));
-      setSandboxStatus("failed");
-    }
-  };
-
-  // Run build verification
-  const handleBuild = async () => {
-    const clonePath = appState.repository.clonePath;
-    const packageManager = appState.repository.packageManager;
-    const backendType = appState.repository.backendType;
-
-    if (!clonePath || !packageManager || !backendType) {
-      setBuildError("Missing required information for build");
-      return;
-    }
-
-    setBuildStatus("running");
-    setBuildError(null);
-    setBuildOutput("");
-    setAppState("repository", "operationStatus", "buildComplete", false);
-
-    try {
-      const services = await initializeServices();
-
-      const onOutput = (line: string) => {
-        console.log("[Build Output]", line);
-        setBuildOutput((prev) => prev + line);
-      };
-
-      console.log(
-        "[Build] Starting build with",
-        packageManager,
-        "in",
-        clonePath,
-      );
-
-      // Run build
-      await services.processService.runBuild(
-        packageManager,
-        clonePath,
-        onOutput,
-      );
-
-      console.log("[Build] Build completed successfully");
-      setAppState("repository", "buildStatus", "success");
-      setBuildStatus("success");
-      setAppState("repository", "operationStatus", "buildComplete", true);
-    } catch (e) {
-      console.error("[Build Error]", e);
-      setBuildError(String(e));
-      setAppState("repository", "buildStatus", "failed");
-      setBuildStatus("failed");
-    }
-  };
-
-  // Update environment variable for Gen1 apps
-  const handleEnvVarUpdate = async () => {
-    const selectedApp = appState.amplifyResources.selectedApp;
-    const selectedBranch = appState.amplifyResources.selectedBranch;
-
-    if (!selectedApp || !selectedBranch) {
-      setEnvVarError(
-        "Missing required information for environment variable update",
-      );
-      return;
-    }
-
-    setEnvVarStatus("running");
-    setEnvVarError(null);
-    setEnvVarMessage(null);
-    setAppState("repository", "operationStatus", "envVarComplete", false);
-
-    try {
-      // Gen1 env var updates not yet implemented
-      setEnvVarError("Gen1 environment variable updates not yet implemented");
-      setEnvVarStatus("failed");
-    } catch (e) {
-      setEnvVarError(String(e));
-      setEnvVarStatus("failed");
-    }
-  };
-
   // Update environment variable for Gen2 apps
-  const handleGen2EnvVarUpdate = async () => {
+  // Update environment variables for Gen1 (checks _LIVE_UPDATES, AMPLIFY_BACKEND_PULL_ONLY, _CUSTOM_IMAGE)
+  const handleGen1EnvVarUpdate = async () => {
     const selectedApp = appState.amplifyResources.selectedApp;
     const selectedBranch = appState.amplifyResources.selectedBranch;
     const region = appState.awsConfig.selectedRegion;
 
     if (!selectedApp || !selectedBranch || !region) {
-      setGen2EnvVarError(
+      setAppState(
+        "repository",
+        "gen2EnvVarError",
         "Missing required information for environment variable update",
       );
       return;
     }
 
     setGen2EnvVarStatus("running");
-    setGen2EnvVarError(null);
-    setGen2EnvVarMessage(null);
+    setAppState("repository", "gen2EnvVarError", null);
+    setAppState("repository", "gen2EnvVarMessage", null);
     setAppState(
       "repository",
       "operationStatus",
-      "gen2EnvVarComplete" as any,
+      "gen2EnvVarComplete",
       false,
     );
 
     try {
       const services = await initializeServices();
 
-      // Remove legacy _CUSTOM_IMAGE environment variable
+      // Check all Gen1 env vars: _LIVE_UPDATES, AMPLIFY_BACKEND_PULL_ONLY, _CUSTOM_IMAGE
       const result = await services.amplifyService!.removeCustomImageIfLegacy(
         region,
         selectedApp.app_id,
@@ -1188,12 +632,12 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
       );
 
       if (result.updated) {
-        setGen2EnvVarMessage(
-          `Environment variable updates:\n${result.changes.join("\n")}`,
-        );
+        setAppState("repository", "gen2EnvVarMessage", result.changes.join("\n"));
       } else {
-        setGen2EnvVarMessage(
-          "No legacy _CUSTOM_IMAGE variable found (already using default image)",
+        setAppState(
+          "repository",
+          "gen2EnvVarMessage",
+          "Environment variables already properly configured",
         );
       }
 
@@ -1201,11 +645,69 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
       setAppState(
         "repository",
         "operationStatus",
-        "gen2EnvVarComplete" as any,
+        "gen2EnvVarComplete",
         true,
       );
     } catch (e) {
-      setGen2EnvVarError(String(e));
+      setAppState("repository", "gen2EnvVarError", String(e));
+      setGen2EnvVarStatus("failed");
+    }
+  };
+
+  // Update environment variables for Gen2 (only checks _CUSTOM_IMAGE)
+  const handleGen2EnvVarUpdate = async () => {
+    const selectedApp = appState.amplifyResources.selectedApp;
+    const selectedBranch = appState.amplifyResources.selectedBranch;
+    const region = appState.awsConfig.selectedRegion;
+
+    if (!selectedApp || !selectedBranch || !region) {
+      setAppState(
+        "repository",
+        "gen2EnvVarError",
+        "Missing required information for environment variable update",
+      );
+      return;
+    }
+
+    setGen2EnvVarStatus("running");
+    setAppState("repository", "gen2EnvVarError", null);
+    setAppState("repository", "gen2EnvVarMessage", null);
+    setAppState(
+      "repository",
+      "operationStatus",
+      "gen2EnvVarComplete",
+      false,
+    );
+
+    try {
+      const services = await initializeServices();
+
+      // Only check _CUSTOM_IMAGE for Gen2
+      const result = await services.amplifyService!.removeCustomImageOnly(
+        region,
+        selectedApp.app_id,
+        selectedBranch.branch_name,
+      );
+
+      if (result.updated) {
+        setAppState("repository", "gen2EnvVarMessage", result.changes.join("\n"));
+      } else {
+        setAppState(
+          "repository",
+          "gen2EnvVarMessage",
+          "Environment variables already properly configured",
+        );
+      }
+
+      setGen2EnvVarStatus("success");
+      setAppState(
+        "repository",
+        "operationStatus",
+        "gen2EnvVarComplete",
+        true,
+      );
+    } catch (e) {
+      setAppState("repository", "gen2EnvVarError", String(e));
       setGen2EnvVarStatus("failed");
     }
   };
@@ -1217,16 +719,21 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
     }
 
     const backendType = appState.repository.backendType;
-    // Gen1 requires build to pass and env var update
+    // Gen1: clone + update + env vars
     if (backendType === "Gen1") {
-      return buildStatus() === "success" && envVarStatus() === "success";
+      return (
+        cloneStatus() === "success" &&
+        updateStatus() === "success" &&
+        gen2EnvVarStatus() === "success"
+      );
     }
-    // Gen2 requires prepare, update, build config, and env var update (build is optional)
+    // Gen2: clone + update + env vars + build config + prepare
     return (
-      prepareStatus() === "success" &&
+      cloneStatus() === "success" &&
       updateStatus() === "success" &&
+      gen2EnvVarStatus() === "success" &&
       buildConfigStatus() === "success" &&
-      gen2EnvVarStatus() === "success"
+      prepareStatus() === "success"
     );
   };
 
@@ -1255,682 +762,241 @@ export function CloneUpdateStep(props: CloneUpdateStepProps) {
     return bt === "Gen2" ? "Gen 2" : "Gen 1";
   };
 
-  const getChangeTypeDisplay = (changeType: string) => {
-    const map: Record<string, string> = {
-      runtime_update: "Runtime Update",
-      dependency_update: "Dependency Update",
-      env_update: "Environment Variable Update",
-      code_comment_update: "Code Comment Update",
-    };
-    return map[changeType] || changeType;
-  };
 
-  // Copy path to clipboard
-  const copyPathToClipboard = async () => {
-    const path = appState.repository.clonePath;
-    if (path) {
-      try {
-        await navigator.clipboard.writeText(path);
-        setPathCopied(true);
-        setTimeout(() => setPathCopied(false), 2000);
-      } catch (e) {
-        console.error("Failed to copy path:", e);
-      }
-    }
-  };
 
   return (
-    <div class="step-container wide clone-update-step">
-      <h2>Clone & Update</h2>
-      <p class="step-description">
-        Clone the repository, detect project configuration, and update runtime
-        settings.
-      </p>
-
-      {/* Selected App/Branch Summary */}
-      <div class="info-bar-balanced">
-        <div class="info-bar-left-balanced">
-          <div class="info-item-balanced">
-            <span class="info-label-balanced">App:</span>
-            <span class="info-value-balanced">
-              {appState.amplifyResources.selectedApp?.name}
-            </span>
+    <WizardStep
+      title="Clone & Update"
+      description="Clone the repository, detect project configuration, and update runtime settings."
+      onNext={handleContinue}
+      onBack={handleBack}
+      nextDisabled={!canContinue()}
+      backDisabled={isAnyOperationRunning()}
+      isLoading={isAnyOperationRunning()}
+    >
+      <div class="space-y-6">
+        {/* Selected App/Branch Summary */}
+        <div class="bg-white dark:bg-[#2a2a2a] rounded-xl px-6 py-4 border border-[#eee] dark:border-[#444] shadow-sm mb-4 flex flex-wrap gap-8 items-center justify-between">
+          <div class="flex flex-wrap gap-8">
+            <div class="flex flex-col">
+              <span class="text-[0.7rem] font-bold text-[#999] dark:text-[#666] uppercase tracking-wider">
+                App:
+              </span>
+              <span class="text-[0.95rem] font-semibold text-[#333] dark:text-[#eee]">
+                {appState.amplifyResources.selectedApp?.name}
+              </span>
+            </div>
+            <div class="flex flex-col">
+              <span class="text-[0.7rem] font-bold text-[#999] dark:text-[#666] uppercase tracking-wider">
+                Branch:
+              </span>
+              <span class="text-[0.95rem] font-semibold text-[#333] dark:text-[#eee]">
+                {appState.amplifyResources.selectedBranch?.branch_name}
+              </span>
+            </div>
           </div>
-          <div class="info-item-balanced">
-            <span class="info-label-balanced">Branch:</span>
-            <span class="info-value-balanced">
-              {appState.amplifyResources.selectedBranch?.branch_name}
+          <div class="flex flex-col items-end">
+            <span class="text-[0.7rem] font-bold text-[#999] dark:text-[#666] uppercase tracking-wider">
+              Target Runtime:
             </span>
-          </div>
-        </div>
-        <div class="info-bar-right-balanced">
-          <div class="info-item-balanced">
-            <span class="info-label-balanced">Target Runtime:</span>
-            <span class="badge-balanced runtime">
+            <span class="px-3 py-0.5 bg-[#e3f2fd] dark:bg-[#1a3a5c] text-[#1976d2] dark:text-[#64b5f6] rounded-full text-[0.8rem] font-bold border border-[#bbdefb] dark:border-[#1a3a5c]">
               {appState.runtimeInfo.targetRuntime}
             </span>
           </div>
         </div>
-      </div>
 
-      {/* Operations */}
-      <div class="operations-container">
-        {/* Step 1: Clone Repository & Detect Configuration */}
-        <div class={`operation-card ${cloneStatus()}`}>
-          <div class="operation-header">
-            <div class="operation-number">1</div>
-            <div class="operation-info">
-              <h3>Clone Repository</h3>
-              <p>Clone the repository and detect project configuration</p>
-              <Show when={cloneStatus() === "pending"}>
-                <Show
-                  when={credentialService?.getGitCredentials()}
-                  fallback={
-                    <p style="font-size: 0.85em; margin-top: 0.5em; opacity: 0.8;">
-                      ℹ️ Configure GitHub credentials in Step 1 for automatic
-                      authentication
-                    </p>
-                  }
-                >
-                  <p style="font-size: 0.85em; margin-top: 0.5em; opacity: 0.8;">
-                    ℹ️ Using GitHub credentials from Step 1
-                  </p>
-                </Show>
-              </Show>
-            </div>
-            <div class="operation-status">
-              <Show when={cloneStatus() === "pending"}>
-                <button class="action-button" onClick={handleClone}>
-                  Clone
-                </button>
-              </Show>
-              <Show when={cloneStatus() === "running"}>
-                <span class="status-indicator running">
-                  <span class="spinner-small"></span>
-                  Cloning...
-                </span>
-              </Show>
-              <Show when={cloneStatus() === "success"}>
-                <span class="status-indicator success">✓ Cloned</span>
-              </Show>
-              <Show when={cloneStatus() === "failed"}>
-                <span class="status-indicator failed">✗ Failed</span>
-              </Show>
-            </div>
-          </div>
-          <Show when={cloneError()}>
-            <div class="operation-error permission-error">
-              <pre class="error-message-text">{cloneError()}</pre>
-            </div>
-          </Show>
-          <Show when={cloneStatus() === "failed"}>
-            <div class="operation-retry-row">
-              <button class="retry-link" onClick={handleClone}>
-                Retry Clone
-              </button>
-            </div>
-          </Show>
-          <Show
-            when={cloneStatus() === "success" && appState.repository.clonePath}
+        {/* Operations */}
+        <div class="flex flex-col gap-4">
+          {/* Step 1: Clone Repository & Detect Configuration */}
+          <OperationCard
+            stepNumber={1}
+            title="Clone Repository"
+            description="Clone the repository and detect project configuration"
+            status={cloneStatus()}
+            onAction={handleClone}
+            actionLabel="Clone"
+            runningLabel="Cloning..."
+            successLabel="✓ Cloned"
+            failedLabel="✗ Failed"
+            error={appState.repository.cloneError}
           >
-            <div class="result-balanced">
-              <h4>Repository Details</h4>
-              <div class="result-row-balanced">
-                <div class="result-item-balanced half-width">
-                  <span class="result-item-label-balanced">
-                    Package Manager:
-                  </span>
-                  <span class="badge-balanced type">
-                    {getPackageManagerDisplay(
-                      appState.repository.packageManager,
-                    )}
-                  </span>
+            <OperationFeedback
+              status={cloneStatus()}
+              title="Repository Details"
+              noChanges={true}
+              noChangesMessage={
+                <div class="flex flex-wrap gap-x-8 gap-y-4 m-0 text-[0.85rem] leading-relaxed break-words font-medium">
+                  <div class="flex items-center gap-2">
+                    <span>
+                      Package Manager:
+                    </span>
+                    <span class="px-2 py-0.5 bg-[#f5f5f5] dark:bg-[#333] text-[#333] dark:text-[#eee] rounded text-[0.75rem] font-bold border border-[#ddd] dark:border-[#555]">
+                      {getPackageManagerDisplay(
+                        appState.repository.packageManager,
+                      )}
+                    </span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-[0.85rem] text-[#666] dark:text-[#aaa]">
+                      Backend Type:
+                    </span>
+                    <span class="px-2 py-0.5 bg-[#f5f5f5] dark:bg-[#333] text-[#333] dark:text-[#eee] rounded text-[0.75rem] font-bold border border-[#ddd] dark:border-[#555]">
+                      {getBackendTypeDisplay(appState.repository.backendType)}
+                    </span>
+                  </div>
                 </div>
-                <div class="result-item-balanced half-width">
-                  <span class="result-item-label-balanced">Backend Type:</span>
-                  <span class="badge-balanced type">
-                    {getBackendTypeDisplay(appState.repository.backendType)}
-                  </span>
-                </div>
-              </div>
-              <div class="result-row-balanced">
-                <div class="result-item-balanced full-width">
-                  <span class="result-item-label-balanced">Path:</span>
-                  <code class="result-item-value-balanced">
-                    {appState.repository.clonePath}
-                  </code>
-                  <button
-                    class="copy-button"
-                    onClick={copyPathToClipboard}
-                    title={pathCopied() ? "Copied!" : "Copy path"}
-                  >
-                    <Show
-                      when={pathCopied()}
-                      fallback={
-                        <svg
-                          width="16"
-                          height="16"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
-                        >
-                          <rect
-                            x="9"
-                            y="9"
-                            width="13"
-                            height="13"
-                            rx="2"
-                            ry="2"
-                          ></rect>
-                          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                        </svg>
-                      }
-                    >
-                      <svg
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                      >
-                        <polyline points="20 6 9 17 4 12"></polyline>
-                      </svg>
-                    </Show>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </Show>
-        </div>
-
-        {/* Step 2: Prepare Project */}
-        <Show when={cloneStatus() === "success"}>
-          <div class={`operation-card ${prepareStatus()}`}>
-            <div class="operation-header">
-              <div class="operation-number">2</div>
-              <div class="operation-info">
-                <h3>Prepare Project</h3>
-                <p>Install dependencies and upgrade Amplify packages</p>
-              </div>
-              <div class="operation-status">
-                <Show when={prepareStatus() === "pending"}>
-                  <button class="action-button" onClick={handlePrepare}>
-                    Prepare
-                  </button>
-                </Show>
-                <Show when={prepareStatus() === "running"}>
-                  <span class="status-indicator running">
-                    <span class="spinner-small"></span>
-                    Preparing...
-                  </span>
-                </Show>
-                <Show when={prepareStatus() === "success"}>
-                  <span class="status-indicator success">✓ Prepared</span>
-                </Show>
-                <Show when={prepareStatus() === "failed"}>
-                  <span class="status-indicator failed">✗ Failed</span>
-                </Show>
-              </div>
-            </div>
-            <Show when={prepareError()}>
-              <div class="operation-error permission-error">
-                <pre class="error-message-text">{prepareError()}</pre>
-              </div>
-            </Show>
-            <Show when={prepareOutput()}>
-              <div class="prepare-output-container">
-                <div class="prepare-output-header">
-                  <span>Preparation Output</span>
-                  <Show when={prepareStatus() === "running"}>
-                    <span class="live-indicator">● Live</span>
-                  </Show>
-                </div>
-                <pre class="prepare-output-live" id="prepare-output-pre">
-                  {prepareOutput()}
-                </pre>
-              </div>
-            </Show>
-            <Show when={prepareStatus() === "failed"}>
-              <div class="operation-retry-row">
-                <button class="retry-link" onClick={handlePrepare}>
-                  Retry Prepare
-                </button>
-              </div>
-            </Show>
-            <Show when={prepareStatus() === "success" && upgradeMessage()}>
-              <div class="operation-result">
-                <p class="upgrade-message">{upgradeMessage()}</p>
-              </div>
-            </Show>
-          </div>
-        </Show>
-
-        {/* Step 3: Update Runtime */}
-        <Show when={prepareStatus() === "success"}>
-          <div class={`operation-card ${updateStatus()}`}>
-            <div class="operation-header">
-              <div class="operation-number">3</div>
-              <div class="operation-info">
-                <h3>Update Runtime</h3>
-                <p>
-                  Update Lambda runtime configurations to{" "}
-                  {appState.runtimeInfo.targetRuntime}
-                </p>
-              </div>
-              <div class="operation-status">
-                <Show when={updateStatus() === "pending"}>
-                  <button class="action-button" onClick={handleUpdate}>
-                    Update
-                  </button>
-                </Show>
-                <Show when={updateStatus() === "running"}>
-                  <span class="status-indicator running">
-                    <span class="spinner-small"></span>
-                    Updating...
-                  </span>
-                </Show>
-                <Show when={updateStatus() === "success"}>
-                  <span class="status-indicator success">✓ Updated</span>
-                </Show>
-                <Show when={updateStatus() === "failed"}>
-                  <span class="status-indicator failed">✗ Failed</span>
-                </Show>
-              </div>
-            </div>
-            <Show when={updateError()}>
-              <div class="operation-error">{updateError()}</div>
-            </Show>
-            <Show when={updateStatus() === "failed"}>
-              <div class="operation-retry-row">
-                <button class="retry-link" onClick={handleUpdate}>
-                  Retry Update
-                </button>
-              </div>
-            </Show>
-            <Show
-              when={
-                updateStatus() === "success" &&
-                appState.repository.changes.length > 0
               }
+            />
+          </OperationCard>
+
+          {/* Step 2: Update Runtime (both Gen1 and Gen2, shown after clone) */}
+          <Show when={cloneStatus() === "success"}>
+            <OperationCard
+              stepNumber={2}
+              title="Update Runtime"
+              description={`Update Lambda runtime configurations to ${appState.runtimeInfo.targetRuntime}`}
+              status={updateStatus()}
+              onAction={handleUpdate}
+              actionLabel="Update"
+              runningLabel="Updating..."
+              successLabel="✓ Updated"
+              failedLabel="✗ Failed"
+              error={appState.repository.updateError}
             >
-              <div class="operation-result">
-                <h4>Changes Made:</h4>
-                <div class="changes-list">
-                  <For each={appState.repository.changes}>
-                    {(change: FileChange) => (
-                      <div class="change-item">
-                        <span class="change-type">
-                          {getChangeTypeDisplay(change.change_type)}
+              <OperationFeedback
+                status={updateStatus()}
+                changes={appState.repository.changes}
+                noChangesMessage="No outdated runtimes are manually configured. Runtimes will be updated with the latest amplify backend version."
+              />
+            </OperationCard>
+          </Show>
+
+          {/* Step 3: Update Environment Variables (both Gen1 and Gen2, shown after update) */}
+          <Show when={updateStatus() === "success"}>
+            <OperationCard
+              stepNumber={3}
+              title="Update Environment Variables"
+              description={
+                <Show
+                  when={appState.repository.backendType === "Gen1"}
+                  fallback="Check and update legacy _CUSTOM_IMAGE variable"
+                >
+                  Check and update environment variables (_CUSTOM_IMAGE,
+                  _LIVE_UPDATES, AMPLIFY_BACKEND_PULL_ONLY)
+                </Show>
+              }
+              status={gen2EnvVarStatus()}
+              onAction={
+                appState.repository.backendType === "Gen1"
+                  ? handleGen1EnvVarUpdate
+                  : handleGen2EnvVarUpdate
+              }
+              actionLabel="Update"
+              runningLabel="Updating..."
+              successLabel="✓ Updated"
+              failedLabel="✗ Failed"
+              error={appState.repository.gen2EnvVarError}
+            >
+              <OperationFeedback
+                status={gen2EnvVarStatus()}
+                message={appState.repository.gen2EnvVarMessage?.split("\n").filter(line => line.trim()) || null}
+                noChanges={!!appState.repository.gen2EnvVarMessage?.includes("configured")}
+              />
+            </OperationCard>
+          </Show>
+
+          {/* Step 4: Update Build Configuration (Gen2 only, after env vars) */}
+          <Show
+            when={
+              appState.repository.backendType === "Gen2" &&
+              gen2EnvVarStatus() === "success"
+            }
+          >
+            <OperationCard
+              stepNumber={4}
+              title="Update Build Configuration"
+              description="Update Amplify build command to use pipeline-deploy"
+              status={buildConfigStatus()}
+              onAction={handleBuildConfigUpdate}
+              actionLabel="Update"
+              runningLabel="Updating..."
+              successLabel="✓ Updated"
+              failedLabel="✗ Failed"
+              error={appState.repository.buildConfigError}
+            >
+              <OperationFeedback
+                status={buildConfigStatus()}
+                noChanges={!!appState.repository.buildConfigMessage?.includes("already up to date")}
+                noChangesMessage={appState.repository.buildConfigMessage}
+                message={
+                  appState.repository.buildConfigChange ? (
+                    <div class="flex flex-col gap-3">
+                      <div class="flex items-center gap-2 text-[0.7rem] text-[#999] dark:text-[#666] uppercase tracking-widest font-bold">
+                        Location:{" "}
+                        <span class="text-[#333] dark:text-[#eee] normal-case">
+                          {appState.repository.buildConfigChange?.location ===
+                            "Cloud"
+                            ? "AWS Cloud (amplify.yml)"
+                            : appState.repository.buildConfigChange?.location}
                         </span>
-                        <code class="change-path">{change.path}</code>
-                        <div class="change-details">
-                          <span class="old-value">{change.old_value}</span>
-                          <span class="arrow">→</span>
-                          <span class="new-value">{change.new_value}</span>
+                      </div>
+                      <div class="flex flex-col gap-1.5 p-3 bg-[#fafafa] dark:bg-[#333] rounded border border-[#f0f0f0] dark:border-[#444]">
+                        <div class="flex flex-col gap-1">
+                          <span class="text-[0.65rem] font-bold text-[#c62828] dark:text-[#ef5350] uppercase tracking-wider">
+                            Old Command
+                          </span>
+                          <code class="text-[0.75rem] text-[#666] dark:text-[#aaa] font-mono break-all line-through opacity-70">
+                            {appState.repository.buildConfigChange?.old_command}
+                          </code>
+                        </div>
+                        <div class="pt-1.5 border-t border-[#f5f5f5] dark:border-[#444] flex flex-col gap-1">
+                          <span class="text-[0.65rem] font-bold text-[#2e7d32] dark:text-[#81c784] uppercase tracking-wider">
+                            New Command
+                          </span>
+                          <code class="text-[0.8rem] text-green-700 dark:text-green-400 font-mono break-all font-bold">
+                            {appState.repository.buildConfigChange?.new_command}
+                          </code>
                         </div>
                       </div>
-                    )}
-                  </For>
-                </div>
-              </div>
-            </Show>
-            <Show
-              when={
-                updateStatus() === "success" &&
-                appState.repository.changes.length === 0
-              }
+                    </div>
+                  ) : (
+                    appState.repository.buildConfigMessage
+                  )
+                }
+              />
+            </OperationCard>
+          </Show>
+
+          {/* Step 5: Package Upgrade/Prepare (Gen2 only, after build config) */}
+          <Show
+            when={
+              appState.repository.backendType === "Gen2" &&
+              buildConfigStatus() === "success"
+            }
+          >
+            <OperationCard
+              stepNumber={5}
+              title="Upgrade Amplify backend packages"
+              description="Generate updated package.json and lock file"
+              status={prepareStatus()}
+              onAction={handlePrepare}
+              actionLabel="Upgrade"
+              runningLabel="Upgrading..."
+              successLabel="✓ Upgraded"
+              failedLabel="✗ Failed"
+              error={appState.repository.upgradeError}
             >
-              <div class="operation-result">
-                <p class="no-changes">
-                  No outdated runtimes are manually configured. Runtimes will be
-                  updated by upgrading to latest amplify backend version.
-                </p>
-              </div>
-            </Show>
-          </div>
-        </Show>
-
-        {/* Step 4: Update Build Configuration (Gen2 only, required) */}
-        <Show
-          when={
-            updateStatus() === "success" &&
-            appState.repository.backendType === "Gen2"
-          }
-        >
-          <div class={`operation-card ${buildConfigStatus()}`}>
-            <div class="operation-header">
-              <div class="operation-number">4</div>
-              <div class="operation-info">
-                <h3>Update Build Configuration</h3>
-                <p>Update Amplify build command to use pipeline-deploy</p>
-              </div>
-              <div class="operation-status">
-                <Show when={buildConfigStatus() === "pending"}>
-                  <button
-                    class="action-button"
-                    onClick={handleBuildConfigUpdate}
-                  >
-                    Update
-                  </button>
-                </Show>
-                <Show when={buildConfigStatus() === "running"}>
-                  <span class="status-indicator running">
-                    <span class="spinner-small"></span>
-                    Updating...
-                  </span>
-                </Show>
-                <Show when={buildConfigStatus() === "success"}>
-                  <span class="status-indicator success">✓ Updated</span>
-                </Show>
-                <Show when={buildConfigStatus() === "failed"}>
-                  <span class="status-indicator failed">✗ Failed</span>
-                </Show>
-              </div>
-            </div>
-            <Show when={buildConfigError()}>
-              <div class="operation-error">
-                <pre class="error-message-text">{buildConfigError()}</pre>
-              </div>
-            </Show>
-            <Show when={buildConfigStatus() === "failed"}>
-              <div class="operation-retry-row">
-                <button class="retry-link" onClick={handleBuildConfigUpdate}>
-                  Retry Config
-                </button>
-              </div>
-            </Show>
-            <Show
-              when={buildConfigStatus() === "success" && buildConfigMessage()}
-            >
-              <div class="operation-result">
-                <p class="upgrade-message">{buildConfigMessage()}</p>
-              </div>
-            </Show>
-            <Show when={appState.repository.buildConfigChange}>
-              <div class="result-balanced">
-                <h4>Build Configuration Updated</h4>
-                <div class="result-row-balanced">
-                  <div class="result-item-balanced half-width">
-                    <span class="result-item-label-balanced">Location:</span>
-                    <span class="result-item-value-balanced">
-                      {appState.repository.buildConfigChange?.location ===
-                      "Cloud"
-                        ? "AWS Cloud Configuration"
-                        : appState.repository.buildConfigChange?.location}
-                    </span>
-                  </div>
-                </div>
-                <div class="result-row-balanced">
-                  <div class="result-item-balanced full-width">
-                    <span class="result-item-label-balanced">Old Command:</span>
-                    <span class="result-item-value-balanced old-value">
-                      {appState.repository.buildConfigChange?.old_command}
-                    </span>
-                  </div>
-                </div>
-                <div class="result-row-balanced">
-                  <div class="result-item-balanced full-width">
-                    <span class="result-item-label-balanced">New Command:</span>
-                    <span class="result-item-value-balanced new-value">
-                      {appState.repository.buildConfigChange?.new_command}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </Show>
-          </div>
-        </Show>
-
-        {/* Step 5: Update Environment Variables (Gen2 only, required) */}
-        <Show
-          when={
-            appState.repository.backendType === "Gen2" &&
-            buildConfigStatus() === "success"
-          }
-        >
-          <div class={`operation-card ${gen2EnvVarStatus()}`}>
-            <div class="operation-header">
-              <div class="operation-number">5</div>
-              <div class="operation-info">
-                <h3>Update Environment Variables</h3>
-                <p>
-                  Remove legacy _CUSTOM_IMAGE variable to use default Amplify
-                  image
-                </p>
-              </div>
-              <div class="operation-status">
-                <Show when={gen2EnvVarStatus() === "pending"}>
-                  <button
-                    class="action-button"
-                    onClick={handleGen2EnvVarUpdate}
-                  >
-                    Update
-                  </button>
-                </Show>
-                <Show when={gen2EnvVarStatus() === "running"}>
-                  <span class="status-indicator running">
-                    <span class="spinner-small"></span>
-                    Updating...
-                  </span>
-                </Show>
-                <Show when={gen2EnvVarStatus() === "success"}>
-                  <span class="status-indicator success">✓ Updated</span>
-                </Show>
-                <Show when={gen2EnvVarStatus() === "failed"}>
-                  <span class="status-indicator failed">✗ Failed</span>
-                </Show>
-              </div>
-            </div>
-            <Show when={gen2EnvVarError()}>
-              <div class="operation-error">
-                <pre class="error-message-text">{gen2EnvVarError()}</pre>
-              </div>
-            </Show>
-            <Show when={gen2EnvVarStatus() === "failed"}>
-              <div class="operation-retry-row">
-                <button class="retry-link" onClick={handleGen2EnvVarUpdate}>
-                  Retry Env Vars
-                </button>
-              </div>
-            </Show>
-            <Show
-              when={gen2EnvVarStatus() === "success" && gen2EnvVarMessage()}
-            >
-              <div class="operation-result">
-                <h4>Environment Variable Changes</h4>
-                <div class="env-var-simple-list">
-                  {gen2EnvVarMessage()
-                    ?.split("\n")
-                    .filter((line) => line.trim())
-                    .map((line) => (
-                      <div class="env-var-simple-item">{line}</div>
-                    ))}
-                </div>
-              </div>
-            </Show>
-          </div>
-        </Show>
-
-        {/* Gen2: No sandbox test - CDK bundling doesn't work in WebContainer */}
-        <Show
-          when={
-            appState.repository.backendType === "Gen2" &&
-            gen2EnvVarStatus() === "success"
-          }
-        >
-          <div class="optional-build-section">
-            <p class="optional-hint">
-              <strong>Note:</strong> Sandbox deployment and build testing are
-              not available in the browser environment due to AWS CDK
-              limitations. Your changes are ready to be pushed and will be built
-              by AWS Amplify in the cloud.
-            </p>
-          </div>
-        </Show>
-
-        {/* Gen2 Sandbox Deployment (Step 6a - optional) */}
-        <Show
-          when={
-            appState.repository.backendType === "Gen2" &&
-            gen2SandboxEnabled() &&
-            gen2EnvVarStatus() === "success"
-          }
-        >
-          <div class={`operation-card ${sandboxStatus()}`}>
-            <div class="operation-header">
-              <div class="operation-number">6a</div>
-              <div class="operation-info">
-                <h3>Deploy Sandbox</h3>
-                <p>Deploy Gen2 sandbox environment for testing</p>
-              </div>
-              <div class="operation-status">
-                <Show when={sandboxStatus() === "pending"}>
-                  <button class="action-button" onClick={handleSandboxDeploy}>
-                    Deploy
-                  </button>
-                </Show>
-                <Show when={sandboxStatus() === "running"}>
-                  <span class="status-indicator running">
-                    <span class="spinner-small"></span>
-                    Deploying...
-                  </span>
-                </Show>
-                <Show when={sandboxStatus() === "success"}>
-                  <span class="status-indicator success">✓ Deployed</span>
-                </Show>
-                <Show when={sandboxStatus() === "failed"}>
-                  <span class="status-indicator failed">✗ Failed</span>
-                </Show>
-              </div>
-            </div>
-            <Show when={sandboxError()}>
-              <div class="operation-error">
-                <pre class="error-output">{sandboxError()}</pre>
-              </div>
-            </Show>
-            <Show when={sandboxStatus() === "failed"}>
-              <div class="operation-retry-row">
-                <button class="retry-link" onClick={handleSandboxDeploy}>
-                  Retry Deploy
-                </button>
-              </div>
-            </Show>
-            <Show when={sandboxOutput()}>
-              <div class="sandbox-output-container">
-                <div class="sandbox-output-header">
-                  <span>Deployment Output</span>
-                  <Show when={sandboxStatus() === "running"}>
-                    <span class="live-indicator">● Live</span>
-                  </Show>
-                </div>
-                <pre class="sandbox-output" id="sandbox-output-pre">
-                  {sandboxOutput()}
-                </pre>
-              </div>
-            </Show>
-          </div>
-        </Show>
-
-        {/* Build Verification (Step 6b - optional for Gen2) */}
-        <Show
-          when={
-            appState.repository.backendType === "Gen2" &&
-            gen2SandboxEnabled() &&
-            sandboxStatus() === "success"
-          }
-        >
-          <div class={`operation-card ${buildStatus()}`}>
-            <div class="operation-header">
-              <div class="operation-number">6b</div>
-              <div class="operation-info">
-                <h3>Build Verification</h3>
-                <p>Run frontend build</p>
-              </div>
-              <div class="operation-status">
-                <Show when={buildStatus() === "pending"}>
-                  <button class="action-button" onClick={handleBuild}>
-                    Build
-                  </button>
-                </Show>
-                <Show when={buildStatus() === "running"}>
-                  <span class="status-indicator running">
-                    <span class="spinner-small"></span>
-                    Building...
-                  </span>
-                </Show>
-                <Show when={buildStatus() === "success"}>
-                  <span class="status-indicator success">✓ Build Passed</span>
-                </Show>
-                <Show when={buildStatus() === "failed"}>
-                  <span class="status-indicator failed">✗ Build Failed</span>
-                </Show>
-              </div>
-            </div>
-            <Show when={buildError()}>
-              <div class="operation-error">
-                <pre class="error-output">{buildError()}</pre>
-              </div>
-            </Show>
-            <Show when={buildStatus() === "failed"}>
-              <div class="operation-retry-row">
-                <button class="retry-link" onClick={handleBuild}>
-                  Retry Build
-                </button>
-              </div>
-            </Show>
-            <Show when={buildOutput()}>
-              <div class="build-output-container">
-                <div class="build-output-header">
-                  <span>Build Output</span>
-                  <Show when={buildStatus() === "running"}>
-                    <span class="live-indicator">● Live</span>
-                  </Show>
-                </div>
-                <pre class="build-output-live" id="build-output-pre">
-                  {buildOutput()}
-                </pre>
-              </div>
-            </Show>
-          </div>
-        </Show>
+              <OperationFeedback
+                status={prepareStatus()}
+                changes={appState.repository.upgradeChanges}
+                message={appState.repository.upgradeMessage}
+                noChanges={appState.repository.upgradeChanges.length === 0}
+              />
+            </OperationCard>
+          </Show>
+        </div>
       </div>
-
-      {/* Actions */}
-      <div class="actions">
-        <button
-          onClick={handleBack}
-          class="secondary-button"
-          disabled={isAnyOperationRunning()}
-        >
-          Back
-        </button>
-        <button
-          onClick={handleContinue}
-          class="primary-button"
-          disabled={!canContinue()}
-        >
-          Continue to Push
-        </button>
-      </div>
-
-      <Show when={!canContinue() && buildStatus() !== "running"}>
-        <p class="info-message">
-          <Show when={appState.repository.backendType === "Gen1"}>
-            Gen1 support is not yet fully implemented.
-          </Show>
-          <Show when={appState.repository.backendType === "Gen2"}>
-            Complete prepare, update runtime, build configuration, and
-            environment variable steps to continue. Build test is optional for
-            Gen2.
-          </Show>
-          <Show when={!appState.repository.backendType}>
-            Complete all steps above to continue to the push step.
-          </Show>
-        </p>
-      </Show>
-    </div>
+    </WizardStep>
   );
 }
 
