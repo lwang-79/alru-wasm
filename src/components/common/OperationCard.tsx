@@ -65,9 +65,11 @@ export function OperationCard(props: OperationCardProps) {
           <h3 class="text-lg font-bold text-[#333] dark:text-[#eee] mb-1">
             {props.title}
           </h3>
-          <p class="text-[#666] dark:text-[#aaa] text-sm">{props.description}</p>
+          <p class="text-[#666] dark:text-[#aaa] text-sm">
+            {props.description}
+          </p>
         </div>
-        <div class="flex items-center gap-2 shrink-0">
+        <div class="flex flex-col items-end shrink-0">
           <Show when={props.status === "pending"}>
             <Show
               when={props.onAction}
@@ -103,6 +105,15 @@ export function OperationCard(props: OperationCardProps) {
               {props.failedLabel || "✗ Failed"}
             </span>
           </Show>
+
+          <Show when={props.status === "failed" && props.onAction}>
+            <button
+              class="text-[#396cd8] dark:text-[#64b5f6] bg-transparent border-none cursor-pointer text-sm underline hover:no-underline"
+              onClick={props.onAction}
+            >
+              Retry
+            </button>
+          </Show>
         </div>
       </div>
 
@@ -113,17 +124,6 @@ export function OperationCard(props: OperationCardProps) {
       </Show>
 
       {props.renderExtra?.()}
-
-      <Show when={props.status === "failed" && props.onAction}>
-        <div class="mt-4 pt-4 border-t border-[#f0f0f0] dark:border-[#444] flex justify-start">
-          <button
-            class="text-[#396cd8] dark:text-[#64b5f6] bg-transparent border-none cursor-pointer text-sm underline hover:no-underline"
-            onClick={props.onAction}
-          >
-            Retry {props.actionLabel || ""}
-          </button>
-        </div>
-      </Show>
 
       {props.children}
     </div>

@@ -217,17 +217,21 @@ export function AppSelectionStep(props: AppSelectionStepProps) {
         repoName,
       );
 
-      // Get target runtime for comparison
+      // Get target runtime for display (what we recommend updating to)
       const targetRuntime = appState.runtimeInfo.targetRuntime;
-      const targetVersion = targetRuntime
-        ? runtimeService.extractMajorVersion(targetRuntime)
+      
+      // Get minimum supported version for outdated check
+      // A runtime is outdated if it's below the minimum supported version (EOL)
+      const minimumSupportedVersion = supportedVersions.length > 0 
+        ? Math.min(...supportedVersions)
         : 20;
 
       // Convert to the format expected by the UI and check if outdated
       const formattedFunctions: LambdaFunction[] = functions.map((func) => {
         const currentVersion = runtimeService.extractMajorVersion(func.runtime);
+        // Mark as outdated only if below minimum supported (EOL)
         const isOutdated =
-          func.runtime.startsWith("nodejs") && currentVersion < targetVersion;
+          func.runtime.startsWith("nodejs") && currentVersion < minimumSupportedVersion;
 
         return {
           arn: func.arn,

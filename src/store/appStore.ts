@@ -107,9 +107,17 @@ export interface AppState {
     error: string | null;
     commitHash: string | null;
     targetBranch: string | null;
-    amplifyJob: any | null; // AmplifyJobDetails type
-    jobCheckError: string | null;
+    deploymentJob: {
+      job: any | null; // AmplifyJobDetails type
+      scenario: "test-branch" | "current-branch" | null;
+      checkError: string | null;
+    };
+    step4Job: {
+      job: any | null; // AmplifyJobDetails type for step 4 (separate from step 2)
+      checkError: string | null;
+    };
     lastFailedJob: any | null; // AmplifyJobDetails type
+    step4LastFailedJob: any | null; // AmplifyJobDetails type for step 4
     retryingJob: boolean;
     innerStep: number;
     postTestSelection: "push" | "manual" | null;
@@ -199,13 +207,21 @@ const initialState: AppState = {
 
   pushStep: {
     status: "pending",
-    deploymentMode: "current",
+    deploymentMode: "test",
     error: null,
     commitHash: null,
     targetBranch: null,
-    amplifyJob: null,
-    jobCheckError: null,
+    deploymentJob: {
+      job: null,
+      scenario: null,
+      checkError: null,
+    },
+    step4Job: {
+      job: null,
+      checkError: null,
+    },
     lastFailedJob: null,
+    step4LastFailedJob: null,
     retryingJob: false,
     innerStep: 0,
     postTestSelection: null,
@@ -249,10 +265,10 @@ const initialState: AppState = {
 const [appState, setAppState] = createStore<AppState>(initialState);
 
 // Helper function to clear state for steps after a given step index
-// Step 0: Prerequisites
-// Step 1: Profile & Region -> clears: amplifyResources, repository
-// Step 2: App Selection -> clears: repository
-// Step 3: Clone & Update -> clears: (nothing downstream except push state)
+// Step 0: Credentials
+// Step 1: App Selection -> clears: repository
+// Step 2: Clone & Update -> clears: (nothing downstream except push state)
+// Step 3: Deployment
 export function clearDownstreamState(fromStepIndex: number) {
   if (fromStepIndex <= 1) {
     // Clear App Selection state (step 2) and beyond
@@ -322,13 +338,21 @@ export function clearDownstreamState(fromStepIndex: number) {
 export function resetPushStepState() {
   setAppState("pushStep", {
     status: "pending",
-    deploymentMode: "current",
+    deploymentMode: "test",
     error: null,
     commitHash: null,
     targetBranch: null,
-    amplifyJob: null,
-    jobCheckError: null,
+    deploymentJob: {
+      job: null,
+      scenario: null,
+      checkError: null,
+    },
+    step4Job: {
+      job: null,
+      checkError: null,
+    },
     lastFailedJob: null,
+    step4LastFailedJob: null,
     retryingJob: false,
     innerStep: 0,
     postTestSelection: null,

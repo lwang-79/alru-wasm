@@ -249,10 +249,12 @@ export class LambdaService {
   }
 
   /**
-   * Check if a runtime is outdated (older than Node.js 20)
+   * Check if a runtime is outdated (EOL/deprecated)
+   * A runtime is outdated if it's older than the minimum supported version
+   * For example, if supported versions are [20, 22], then 18 and below are outdated
    *
    * @param runtime Runtime string (e.g., "nodejs18.x")
-   * @returns true if runtime is outdated
+   * @returns true if runtime is outdated (EOL)
    */
   private isRuntimeOutdated(runtime: string): boolean {
     if (!runtime || !runtime.startsWith('nodejs')) {
@@ -263,7 +265,13 @@ export class LambdaService {
     if (!match) return false;
 
     const version = parseInt(match[0]);
-    return version < 20; // nodejs20.x is current target
+    
+    // Hardcoded minimum supported version
+    // This should match the oldest version returned by RuntimeService.getSupportedRuntimes()
+    // As of Jan 2025: Node.js 20 is the oldest supported (maintained until April 2026)
+    const minimumSupported = 20;
+    
+    return version < minimumSupported;
   }
 }
 

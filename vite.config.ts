@@ -20,4 +20,8 @@ export default defineConfig({
       buffer: "buffer/",
     },
   },
+  test: {
+    environment: "happy-dom",
+    globals: true,
+  },
 });

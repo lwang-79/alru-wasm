@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest"
   },
   "dependencies": {
     "@aws-sdk/client-amplify": "^3.971.0",
@@ -25,6 +26,7 @@
     "@testing-library/jest-dom": "^6.9.1",
     "@types/node": "^24.10.1",
     "autoprefixer": "^10.4.23",
+    "fast-check": "^4.5.3",
     "happy-dom": "^20.3.1",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.19",

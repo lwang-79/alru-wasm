@@ -99,7 +99,9 @@ function App() {
 
     // Block navigation if step is disabled or operation is running
     if (!step.isEnabled || appState.repository.isOperationRunning) {
-      console.log(`[goToStep] Step ${stepIndex} blocked - disabled or operation running`);
+      console.log(
+        `[goToStep] Step ${stepIndex} blocked - disabled or operation running`,
+      );
       return;
     }
 
