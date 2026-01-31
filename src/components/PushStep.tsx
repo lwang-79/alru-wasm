@@ -83,11 +83,8 @@ export function PushStep(props: PushStepProps) {
   }) => setAppState("pushStep", "step4Job", state);
 
   const step4LastFailedJob = () => appState.pushStep.step4LastFailedJob;
-  const setStep4LastFailedJob = (job: AmplifyJobDetails | null) => {
-    console.log("🔴 [SET STEP4 LAST FAILED JOB]", job?.jobId || "null");
-    console.trace("🔴 [SET STEP4 LAST FAILED JOB] Stack trace");
+  const setStep4LastFailedJob = (job: AmplifyJobDetails | null) =>
     setAppState("pushStep", "step4LastFailedJob", job);
-  };
 
   const retryingJob = () => appState.pushStep.retryingJob;
   const setRetryingJob = (retrying: boolean) =>
@@ -571,24 +568,14 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
 
   // Handle push operation
   const handlePush = async () => {
-    console.log("🔴🔴🔴 HANDLE PUSH CALLED - NEW VERSION 2.0 🔴🔴🔴");
-    console.log("=== HANDLE PUSH CALLED ===");
     const currentBranch = appState.amplifyResources.selectedBranch?.branch_name;
-    console.log(
-      "📍 Current branch from state:",
-      currentBranch,
-      "Type:",
-      typeof currentBranch,
-    );
 
     if (!currentBranch) {
-      console.log("❌ No branch selected, returning");
       setPushError("No branch selected");
       setPushStatus("failed");
       return;
     }
 
-    console.log("✅ Current branch:", currentBranch);
     setPushStatus("running");
     setPushError(null);
     setCommitHash(null);
@@ -596,9 +583,6 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
     // Determine scenario based on deployment mode
     const scenario: DeploymentScenario =
       deploymentMode() === "test" ? "test-branch" : "current-branch";
-
-    console.log("📍 Deployment scenario:", scenario);
-    console.log("📍 Deployment mode:", deploymentMode());
 
     // Determine target branch
     let targetBranchName = currentBranch;
@@ -623,11 +607,6 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
 
       // Handle no changes case
       if (result.noChanges) {
-        console.log("=== NO CHANGES DETECTED ===");
-        console.log("Scenario:", scenario);
-        console.log("targetBranchName:", targetBranchName);
-        console.log("currentBranch:", currentBranch);
-
         setCommitHash(null);
         setPushStatus("success");
 
@@ -635,27 +614,12 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
         if (scenario === "current-branch") {
           // Use targetBranchName which is guaranteed to be set
           const branchToCheck = targetBranchName || currentBranch;
-          console.log(
-            "Branch to check:",
-            branchToCheck,
-            "Type:",
-            typeof branchToCheck,
-            "Length:",
-            branchToCheck?.length,
-          );
 
           if (branchToCheck) {
-            console.log("Calling checkLastJobStatus...");
             await checkLastJobStatus(branchToCheck, (job) => {
-              console.log("Job found in callback:", job.jobId, job.status);
               setLastFailedJob(job);
             });
-            console.log("checkLastJobStatus completed");
-          } else {
-            console.error("No branch to check!");
           }
-        } else {
-          console.log("Skipping job check for test-branch scenario");
         }
         return;
       }
@@ -768,8 +732,6 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
         selectedApp.app_id,
         branchName,
       );
-
-      console.log(`Found ${jobs.length} jobs on branch ${branchName}`);
 
       if (jobs.length > 0) {
         const latestJobId = jobs[0].jobId;
@@ -898,22 +860,14 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
 
   // Retry the last failed job for current branch (step 4)
   const handleRetryJobForCurrent = async () => {
-    console.log("🔵 [STEP4 RETRY] handleRetryJobForCurrent called");
-    console.log("🔵 [STEP4 RETRY] step4LastFailedJob:", step4LastFailedJob());
-    console.log("🔵 [STEP4 RETRY] step4Job:", step4Job());
-
     const lastJob = step4LastFailedJob();
     if (!lastJob) {
-      console.log("🔴 [STEP4 RETRY] No lastJob, returning");
       return;
     }
-
-    console.log("🔵 [STEP4 RETRY] Retrying job:", lastJob.jobId);
 
     const selectedBranch = appState.amplifyResources.selectedBranch;
 
     if (!selectedBranch) {
-      console.log("🔴 [STEP4 RETRY] No selectedBranch, returning");
       return;
     }
 
@@ -921,7 +875,6 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
     setManagementStatus("Starting deployment job...");
 
     // Clear the job to show "Starting..." message
-    console.log("🔵 [STEP4 RETRY] Clearing step4Job");
     setStep4Job({
       job: null,
       checkError: null,
@@ -939,7 +892,6 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
       const amplifyService = new AmplifyService();
 
       // Start a RETRY job in AWS Amplify
-      console.log("🔵 [STEP4 RETRY] Starting RETRY job in AWS");
       const newJob = await amplifyService.startJob(
         region,
         selectedApp.app_id,
@@ -947,7 +899,6 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
         "RETRY",
         lastJob.jobId,
       );
-      console.log("🔵 [STEP4 RETRY] New job started:", newJob.jobId);
 
       // Don't update the job immediately - let checkForJob handle it
       // This allows the "Starting..." message to show while waiting for the job
@@ -956,13 +907,11 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
       await new Promise((resolve) => setTimeout(resolve, 3000));
 
       // Check for the job using the shared function
-      console.log("🔵 [STEP4 RETRY] Checking for job");
       const jobResult = await checkForJob(
         newJob.commitId || "HEAD",
         selectedBranch.branch_name,
         "current-branch",
       );
-      console.log("🔵 [STEP4 RETRY] Job check result:", jobResult);
 
       if (jobResult.error) {
         setStep4Job({
@@ -971,29 +920,16 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
         });
         setManagementStatus(`Error: ${jobResult.error}`);
       } else if (jobResult.job) {
-        console.log(
-          "🔵 [STEP4 RETRY] Setting step4Job to new job:",
-          jobResult.job.jobId,
-        );
         setStep4Job({
           job: jobResult.job,
           checkError: null,
         });
 
         // Start polling the job
-        console.log(
-          "🔵 [STEP4 RETRY] Starting polling for job:",
-          jobResult.job.jobId,
-        );
         startJobPolling(
           jobResult.job.jobId,
           selectedBranch.branch_name,
           (job) => {
-            console.log(
-              "🔵 [STEP4 RETRY POLL] Job update:",
-              job.jobId,
-              job.status,
-            );
             setStep4Job({
               job: job,
               checkError: null,
@@ -1005,27 +941,12 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
       }
 
       // Clear step4LastFailedJob after retry (like step 2 does)
-      console.log("🔵 [STEP4 RETRY] Clearing step4LastFailedJob");
       setStep4LastFailedJob(null);
-      console.log(
-        "🔵 [STEP4 RETRY] After clear - step4LastFailedJob:",
-        step4LastFailedJob(),
-      );
     } catch (e) {
-      console.error(
-        "🔴 [STEP4 RETRY] Failed to retry job for current branch:",
-        e,
-      );
+      console.error("Failed to retry job for current branch:", e);
       setManagementStatus(`Error: Failed to retry job: ${String(e)}`);
     } finally {
-      console.log("🔵 [STEP4 RETRY] Setting retryingJob to false");
       setRetryingJob(false);
-      console.log(
-        "🔵 [STEP4 RETRY] Final state - step4LastFailedJob:",
-        step4LastFailedJob(),
-        "step4Job:",
-        step4Job(),
-      );
     }
   };
 
@@ -1879,17 +1800,6 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
 
                 {/* Show current job status (without retry options) */}
                 <Show when={step4Job().job && !step4LastFailedJob()}>
-                  {console.log(
-                    "🟢 [STEP4 UI] Rendering CURRENT job card (no retry options)",
-                  )}
-                  {console.log(
-                    "🟢 [STEP4 UI] step4Job:",
-                    step4Job().job?.jobId,
-                  )}
-                  {console.log(
-                    "🟢 [STEP4 UI] step4LastFailedJob:",
-                    step4LastFailedJob(),
-                  )}
                   <DeploymentJobCard
                     job={step4Job().job}
                     consoleUrl={getJobConsoleUrl(
@@ -1902,25 +1812,8 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
 
                 {/* Show last job with retry options */}
                 <Show when={step4LastFailedJob()}>
-                  {console.log(
-                    "🟡 [STEP4 UI] Rendering LAST job card (WITH retry options)",
-                  )}
-                  {console.log(
-                    "🟡 [STEP4 UI] step4LastFailedJob:",
-                    step4LastFailedJob()?.jobId,
-                  )}
-                  {console.log(
-                    "🟡 [STEP4 UI] step4Job:",
-                    step4Job().job?.jobId,
-                  )}
-                  {console.log("🟡 [STEP4 UI] retryingJob:", retryingJob())}
-                  {console.log(
-                    "🟡 [STEP4 UI] Loading indicator condition:",
-                    retryingJob() && !step4Job().job,
-                  )}
                   {/* Show loading indicator while retrying (replaces the card) */}
                   <Show when={retryingJob() && !step4Job().job}>
-                    {console.log("🟡 [STEP4 UI] Showing loading indicator")}
                     <div class="mt-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md flex items-center gap-3">
                       <span class="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></span>
                       <span class="text-sm text-blue-700 dark:text-blue-300">
@@ -1971,16 +1864,6 @@ This update ensures Lambda functions use supported Node.js runtimes.`;
                   (!retryingJob() || step4Job().job)
                 }
               >
-                {console.log("🔵 [STEP4 UI] Rendering NORMAL PUSH job card")}
-                {console.log("🔵 [STEP4 UI] step4Job:", step4Job().job?.jobId)}
-                {console.log(
-                  "🔵 [STEP4 UI] managementStatus:",
-                  managementStatus(),
-                )}
-                {console.log(
-                  "🔵 [STEP4 UI] step4LastFailedJob:",
-                  step4LastFailedJob(),
-                )}
                 <DeploymentJobCard
                   job={step4Job().job}
                   consoleUrl={getJobConsoleUrl(
